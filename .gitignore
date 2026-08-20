@@ -1,0 +1,46 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Operating system and IDE
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+
+# Logs, temporary files, and caches
+*.log
+logs/
+tmp/
+temp/
+cache/
+.cache/
+
+# Dependencies and build outputs
+node_modules/
+dist/
+build/
+target/
+.gradle/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# QiongTu local datasets and generated artifacts
+data/
+datasets/
+input/
+inputs/
+output/
+outputs/
+artifacts/
+workspace/
+workspaces/
+checkpoints/
+models/

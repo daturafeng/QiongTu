@@ -1,0 +1,51 @@
+schema: spec-driven
+
+context: |
+  Product: Windows x64 desktop software comparable to DJI Terra for processing drone imagery.
+  Core outputs: DOM/DSM GeoTIFF, LAS/LAZ/PLY point clouds, textured OBJ/FBX,
+  mesh 3D Tiles, source Gaussian splats, and Cesium-compatible Gaussian 3D Tiles.
+  Runtime direction: local desktop shell and services; NVIDIA CUDA is the first
+  Gaussian-training target; source imagery and formal outputs are high-value data.
+  Reference dataset: liangjianghui contains DJI M4TD multi-angle MPO imagery and
+  RTK/navigation sidecars. Repository-external source imagery is read-only by default.
+  High-risk domains: large files, long GPU jobs, CRS/vertical datums, local-to-ECEF
+  transforms, format interoperability, Cesium/glTF Gaussian compatibility, installation,
+  upgrade, cancellation, recovery, and preservation of user data.
+  Governance: OpenSpec is the sole source of truth. Read AGENTS.md and
+  openspec/specs/development-governance/spec.md before software work. Requirements or
+  technical decisions must be updated in OpenSpec before implementation changes.
+  Repository: https://github.com/daturafeng/QiongTu.git with main as the default branch.
+  Environment: this directory may not yet be a Git repository. OpenSpec may be installed
+  under an NVM-managed Node version rather than the current PATH; discover it read-only
+  and require Node.js 20.19+ without changing the user's active NVM version.
+
+rules:
+  proposal:
+    - "Identify target users, their current problem, expected value, and measurable success indicators."
+    - "Define the smallest complete MVP workflow and explicit non-goals; do not treat a fragile demo as an MVP."
+    - "State affected capabilities, user/data impact, major external dependencies, licensing, privacy, and delivery constraints."
+  specs:
+    - "Specify observable behavior with testable normal, error, cancellation, restart/recovery, compatibility, and data-protection scenarios where applicable."
+    - "For geospatial or 3D outputs, define CRS, vertical reference, local origin, axes, units, provenance, quality level, and external-runtime compatibility."
+    - "Never claim survey-grade accuracy, RTK use, format compatibility, or successful publication without explicit evidence and acceptance scenarios."
+  design:
+    - "Explain decisions and rejected alternatives; include data ownership, security, resource/performance budgets, failure isolation, observability, deployment, upgrade, rollback, and verification strategy."
+    - "For GPU, large-file, coordinate, installer, and evolving-format work, define version pinning, compatibility matrices, reference datasets, and recovery paths."
+    - "Preserve immutable source data and reprocessable authoritative intermediates when derived formats or viewers may evolve."
+  tasks:
+    - "Order tasks by dependency and keep each task small enough to implement and verify in one focused session."
+    - "Every task must have an observable completion condition and include the tests, external-tool checks, or recovery evidence needed to mark it done."
+    - "Include release, installation, upgrade, backup/restore, rollback, known-limit, and pilot acceptance tasks for a releasable version."
+
+operations:
+  apply:
+    guidance:
+      - "Confirm the selected task satisfies Definition of Ready before editing implementation files."
+      - "Implement in dependency order, keep changes scoped, preserve user changes, and update each checkbox only after its verification passes."
+      - "If implementation reveals new behavior or a material design decision, update and validate OpenSpec before continuing."
+      - "Report commands/tests actually run, failures, skipped checks, residual risk, and the next pending task."
+  archive:
+    guidance:
+      - "Require all in-scope tasks complete, OpenSpec strict validation successful, and specifications synchronized before archive."
+      - "Require verification evidence, known limitations, compatibility notes, and applicable release/rollback readiness to be recorded."
+      - "After archive, confirm the main specs exist and unrelated active product changes remain intact."

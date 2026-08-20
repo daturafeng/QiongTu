@@ -6,8 +6,9 @@ context: |
   mesh 3D Tiles, source Gaussian splats, and Cesium-compatible Gaussian 3D Tiles.
   Runtime direction: local desktop shell and services; NVIDIA CUDA is the first
   Gaussian-training target; source imagery and formal outputs are high-value data.
-  Reference dataset: liangjianghui contains DJI M4TD multi-angle MPO imagery and
-  RTK/navigation sidecars. Repository-external source imagery is read-only by default.
+  Reference data includes an owner-provided multi-angle JPEG/MPO sample with
+  positioning sidecars. Repository-external source data and detailed inventories are
+  read-only and private-local by default.
   High-risk domains: large files, long GPU jobs, CRS/vertical datums, local-to-ECEF
   transforms, format interoperability, Cesium/glTF Gaussian compatibility, installation,
   upgrade, cancellation, recovery, and preservation of user data.

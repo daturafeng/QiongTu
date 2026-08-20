@@ -1,0 +1,170 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://qiongtu.local/schemas/dataset-registry.schema.json",
+  "title": "QiongTu benchmark dataset registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "datasets"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schema_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "datasets": {
+      "type": "array",
+      "minItems": 3,
+      "items": { "$ref": "#/definitions/dataset" }
+    }
+  },
+  "definitions": {
+    "dataset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "kind",
+        "roles",
+        "availability",
+        "source_binding",
+        "identity",
+        "source_policy",
+        "composition",
+        "expected_results"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*$"
+        },
+        "name": { "type": "string", "minLength": 1 },
+        "kind": {
+          "type": "string",
+          "enum": ["physical", "logical-subset", "derived-fixtures"]
+        },
+        "roles": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "oblique-complex",
+              "regular-nadir",
+              "control-reference-accuracy",
+              "gaussian-novel-view",
+              "failure-quality-control",
+              "cross-source-regression"
+            ]
+          }
+        },
+        "availability": {
+          "type": "string",
+          "enum": ["available-local", "selected-remote", "derived-on-demand"]
+        },
+        "source_binding": {
+          "type": "string",
+          "pattern": "^(env|remote|logical|derived):"
+        },
+        "identity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["method", "value"],
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": ["private-local-manifest", "content-manifest-sha256", "persistent-release-id", "ordered-content-sha256", "recipe-version"]
+            },
+            "value": { "type": "string", "minLength": 8 }
+          }
+        },
+        "source_policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "redistribution",
+            "contains_sensitive_geospatial_data",
+            "license_id",
+            "license_evidence_url",
+            "attribution"
+          ],
+          "properties": {
+            "mode": { "const": "read-only" },
+            "redistribution": {
+              "type": "string",
+              "enum": ["not-authorized", "recipe-only"]
+            },
+            "contains_sensitive_geospatial_data": { "type": "boolean" },
+            "license_id": { "type": "string", "minLength": 1 },
+            "license_evidence_url": { "type": ["string", "null"], "format": "uri" },
+            "attribution": { "type": ["string", "null"] },
+            "notes": { "type": "string" }
+          }
+        },
+        "composition": {
+          "type": "object",
+          "minProperties": 1
+        },
+        "observations": {
+          "type": "object"
+        },
+        "derivation_recipes": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/recipe" }
+        },
+        "expected_results": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/expectation" }
+        },
+        "known_limits": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "recipe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "operation", "source_selection", "expected_outcome"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+        "operation": { "type": "string", "minLength": 1 },
+        "source_selection": { "type": "string", "minLength": 1 },
+        "parameters": { "type": "object" },
+        "expected_outcome": { "type": "string", "minLength": 1 },
+        "source_mutation_allowed": { "const": false }
+      }
+    },
+    "expectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "phase", "assertion", "status", "rationale"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+        "phase": {
+          "type": "string",
+          "enum": ["ingestion", "quality-control", "alignment", "output", "evidence"]
+        },
+        "assertion": {
+          "type": "object",
+          "required": ["operator", "value"],
+          "properties": {
+            "operator": {
+              "type": "string",
+              "enum": ["equals", "greater-than-or-equal", "less-than-or-equal", "contains-all", "reports", "forbids"]
+            },
+            "value": {}
+          }
+        },
+        "status": {
+          "type": "string",
+          "enum": ["fixed", "provisional-until-engine-baseline"]
+        },
+        "rationale": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

@@ -1,0 +1,111 @@
+{
+  "$schema": "../schemas/benchmark-record.schema.json",
+  "record_version": "1.0.0",
+  "record_id": "example-not-a-result",
+  "record_purpose": "schema-example-not-benchmark-evidence",
+  "dataset": {
+    "id": "usgs-fall-creek-20161109-v1",
+    "identity": "doi:10.5066/P9AYWU8Z#USGS:5dfd4efae4b0b207aa00a15a",
+    "identity_status": "persistent-release-only",
+    "source_release_id": "doi:10.5066/P9AYWU8Z",
+    "license_id": "US-Public-Domain",
+    "license_evidence_url": "https://data.usgs.gov/datacatalog/data/USGS%3A5dfd4efae4b0b207aa00a15a",
+    "input_image_count": null,
+    "input_auxiliary_count": null,
+    "input_bytes": null
+  },
+  "run": {
+    "status": "not-run",
+    "quality_profile": "standard",
+    "started_at_utc": null,
+    "finished_at_utc": null,
+    "deterministic_seed": null,
+    "host": {
+      "os": "not-recorded",
+      "cpu": "not-recorded",
+      "logical_cpu_count": null,
+      "memory_bytes": null,
+      "gpu": null,
+      "vram_bytes": null,
+      "driver": null,
+      "cuda": null
+    }
+  },
+  "components": [
+    {
+      "role": "dataset-inspector",
+      "name": "qiongtu-reference-dataset-inspector",
+      "version": "1.0.0",
+      "source_revision": null,
+      "parameters_sha256": null,
+      "license_review_id": null
+    }
+  ],
+  "spatial_reference": {
+    "horizontal": null,
+    "vertical": null,
+    "local_origin": null,
+    "axes": null,
+    "units": null,
+    "georeferencing_source": "not-evaluated"
+  },
+  "metrics": {
+    "alignment": {
+      "registered_images": { "status": "not-measured", "value": null, "unit": "images", "method": "engine report", "reason": "Example structure only." },
+      "registration_ratio": { "status": "not-measured", "value": null, "unit": "ratio", "method": "registered/input", "reason": "Example structure only." },
+      "reprojection_rmse_px": { "status": "not-measured", "value": null, "unit": "px", "method": "engine report", "reason": "Example structure only." }
+    },
+    "coverage": {
+      "area_m2": { "status": "not-measured", "value": null, "unit": "m2", "method": "validated output footprint", "reason": "Example structure only." },
+      "east_west_m": { "status": "not-measured", "value": null, "unit": "m", "method": "validated output footprint", "reason": "Example structure only." },
+      "north_south_m": { "status": "not-measured", "value": null, "unit": "m", "method": "validated output footprint", "reason": "Example structure only." },
+      "gap_ratio": { "status": "not-measured", "value": null, "unit": "ratio", "method": "coverage mask", "reason": "Example structure only." }
+    },
+    "gsd": {
+      "min_cm_per_px": { "status": "not-measured", "value": null, "unit": "cm/px", "method": "GeoTIFF geotransform", "reason": "Example structure only." },
+      "mean_cm_per_px": { "status": "not-measured", "value": null, "unit": "cm/px", "method": "GeoTIFF geotransform", "reason": "Example structure only." },
+      "max_cm_per_px": { "status": "not-measured", "value": null, "unit": "cm/px", "method": "GeoTIFF geotransform", "reason": "Example structure only." }
+    },
+    "geometry": {
+      "dense_points": { "status": "not-measured", "value": null, "unit": "points", "method": "point-cloud header", "reason": "Example structure only." },
+      "point_density_per_m2": { "status": "not-measured", "value": null, "unit": "points/m2", "method": "point count / valid area", "reason": "Example structure only." },
+      "checkpoint_horizontal_rmse_m": { "status": "not-applicable", "value": null, "unit": "m", "method": "independent check points", "reason": "No independent check-point set is registered." },
+      "checkpoint_vertical_rmse_m": { "status": "not-applicable", "value": null, "unit": "m", "method": "independent check points", "reason": "No independent check-point set is registered." }
+    },
+    "mesh": {
+      "vertices": { "status": "not-measured", "value": null, "unit": "vertices", "method": "mesh parser", "reason": "Example structure only." },
+      "triangles": { "status": "not-measured", "value": null, "unit": "triangles", "method": "mesh parser", "reason": "Example structure only." },
+      "texture_coverage_ratio": { "status": "not-measured", "value": null, "unit": "ratio", "method": "UV/material audit", "reason": "Example structure only." },
+      "manifold_ratio": { "status": "not-measured", "value": null, "unit": "ratio", "method": "mesh topology audit", "reason": "Example structure only." },
+      "visual_score": { "status": "not-measured", "value": null, "unit": "score-0-5", "method": "fixed-view review rubric", "reason": "Example structure only." }
+    },
+    "gaussian": {
+      "splat_count": { "status": "not-measured", "value": null, "unit": "splats", "method": "source Gaussian parser", "reason": "Example structure only." },
+      "attribute_completeness_ratio": { "status": "not-measured", "value": null, "unit": "ratio", "method": "required attribute audit", "reason": "Example structure only." },
+      "psnr_db": { "status": "not-measured", "value": null, "unit": "dB", "method": "held-out views", "reason": "Example structure only." },
+      "ssim": { "status": "not-measured", "value": null, "unit": "ratio", "method": "held-out views", "reason": "Example structure only." },
+      "lpips": { "status": "not-measured", "value": null, "unit": "score", "method": "held-out views", "reason": "Example structure only." },
+      "visual_score": { "status": "not-measured", "value": null, "unit": "score-0-5", "method": "fixed-view review rubric", "reason": "Example structure only." }
+    },
+    "performance": {
+      "wall_time_s": { "status": "not-measured", "value": null, "unit": "s", "method": "monotonic clock", "reason": "Example structure only." },
+      "peak_cpu_percent": { "status": "not-measured", "value": null, "unit": "percent", "method": "host sampler", "reason": "Example structure only." },
+      "peak_memory_bytes": { "status": "not-measured", "value": null, "unit": "bytes", "method": "process-tree sampler", "reason": "Example structure only." },
+      "peak_gpu_percent": { "status": "not-measured", "value": null, "unit": "percent", "method": "GPU sampler", "reason": "Example structure only." },
+      "peak_vram_bytes": { "status": "not-measured", "value": null, "unit": "bytes", "method": "GPU sampler", "reason": "Example structure only." },
+      "peak_temp_disk_bytes": { "status": "not-measured", "value": null, "unit": "bytes", "method": "workspace sampler", "reason": "Example structure only." },
+      "stages": []
+    }
+  },
+  "outputs": [],
+  "acceptance": {
+    "overall": "not-evaluated",
+    "criteria": []
+  },
+  "provenance": {
+    "commands_redacted": [],
+    "logs_sha256": [],
+    "report_generated_by": "manual schema example",
+    "known_limits": ["This file demonstrates the record shape and is not benchmark evidence."]
+  }
+}

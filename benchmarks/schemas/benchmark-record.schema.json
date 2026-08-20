@@ -1,0 +1,337 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://qiongtu.local/schemas/benchmark-record.schema.json",
+  "title": "QiongTu engine benchmark record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "record_version",
+    "record_id",
+    "record_purpose",
+    "dataset",
+    "run",
+    "components",
+    "spatial_reference",
+    "metrics",
+    "outputs",
+    "acceptance",
+    "provenance"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "record_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "record_id": { "type": "string", "minLength": 1 },
+    "record_purpose": {
+      "type": "string",
+      "enum": ["benchmark-evidence", "schema-example-not-benchmark-evidence"]
+    },
+    "dataset": { "$ref": "#/definitions/datasetReference" },
+    "run": { "$ref": "#/definitions/run" },
+    "components": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/component" }
+    },
+    "spatial_reference": { "$ref": "#/definitions/spatialReference" },
+    "metrics": { "$ref": "#/definitions/metrics" },
+    "outputs": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/output" }
+    },
+    "acceptance": { "$ref": "#/definitions/acceptance" },
+    "provenance": { "$ref": "#/definitions/provenance" }
+  },
+  "definitions": {
+    "metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "value", "unit", "method", "reason"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["measured", "not-measured", "not-applicable"]
+        },
+        "value": { "type": ["number", "null"] },
+        "unit": { "type": ["string", "null"] },
+        "method": { "type": "string", "minLength": 1 },
+        "reason": { "type": ["string", "null"] }
+      }
+    },
+    "datasetReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "identity",
+        "identity_status",
+        "source_release_id",
+        "license_id",
+        "license_evidence_url",
+        "input_image_count",
+        "input_auxiliary_count",
+        "input_bytes"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "identity": { "type": "string", "minLength": 8 },
+        "identity_status": {
+          "type": "string",
+          "enum": ["content-verified", "persistent-release-only", "derived-recipe"]
+        },
+        "source_release_id": { "type": ["string", "null"] },
+        "license_id": { "type": "string", "minLength": 1 },
+        "license_evidence_url": { "type": ["string", "null"], "format": "uri" },
+        "input_image_count": { "type": ["integer", "null"], "minimum": 0 },
+        "input_auxiliary_count": { "type": ["integer", "null"], "minimum": 0 },
+        "input_bytes": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "quality_profile",
+        "started_at_utc",
+        "finished_at_utc",
+        "deterministic_seed",
+        "host"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["not-run", "success", "partial-failure", "failure", "cancelled"]
+        },
+        "quality_profile": {
+          "type": "string",
+          "enum": ["preview", "standard", "high", "not-applicable"]
+        },
+        "started_at_utc": { "type": ["string", "null"], "format": "date-time" },
+        "finished_at_utc": { "type": ["string", "null"], "format": "date-time" },
+        "deterministic_seed": { "type": ["integer", "null"] },
+        "host": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "os",
+            "cpu",
+            "logical_cpu_count",
+            "memory_bytes",
+            "gpu",
+            "vram_bytes",
+            "driver",
+            "cuda"
+          ],
+          "properties": {
+            "os": { "type": "string" },
+            "cpu": { "type": "string" },
+            "logical_cpu_count": { "type": ["integer", "null"], "minimum": 1 },
+            "memory_bytes": { "type": ["integer", "null"], "minimum": 0 },
+            "gpu": { "type": ["string", "null"] },
+            "vram_bytes": { "type": ["integer", "null"], "minimum": 0 },
+            "driver": { "type": ["string", "null"] },
+            "cuda": { "type": ["string", "null"] }
+          }
+        }
+      }
+    },
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "name", "version", "source_revision", "parameters_sha256", "license_review_id"],
+      "properties": {
+        "role": {
+          "type": "string",
+          "enum": [
+            "dataset-inspector",
+            "photogrammetry-engine",
+            "gaussian-trainer",
+            "mesh-tiles-converter",
+            "gaussian-tiles-converter",
+            "cesiumjs"
+          ]
+        },
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "source_revision": { "type": ["string", "null"] },
+        "parameters_sha256": { "type": ["string", "null"] },
+        "license_review_id": { "type": ["string", "null"] }
+      }
+    },
+    "spatialReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["horizontal", "vertical", "local_origin", "axes", "units", "georeferencing_source"],
+      "properties": {
+        "horizontal": { "type": ["string", "null"] },
+        "vertical": { "type": ["string", "null"] },
+        "local_origin": { "type": ["string", "null"] },
+        "axes": { "type": ["string", "null"] },
+        "units": { "type": ["string", "null"] },
+        "georeferencing_source": {
+          "type": "string",
+          "enum": ["relative", "embedded-gps", "rtk-ppk-used", "ground-control-used", "not-evaluated"]
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alignment", "coverage", "gsd", "geometry", "mesh", "gaussian", "performance"],
+      "properties": {
+        "alignment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["registered_images", "registration_ratio", "reprojection_rmse_px"],
+          "properties": {
+            "registered_images": { "$ref": "#/definitions/metric" },
+            "registration_ratio": { "$ref": "#/definitions/metric" },
+            "reprojection_rmse_px": { "$ref": "#/definitions/metric" }
+          }
+        },
+        "coverage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["area_m2", "east_west_m", "north_south_m", "gap_ratio"],
+          "properties": {
+            "area_m2": { "$ref": "#/definitions/metric" },
+            "east_west_m": { "$ref": "#/definitions/metric" },
+            "north_south_m": { "$ref": "#/definitions/metric" },
+            "gap_ratio": { "$ref": "#/definitions/metric" }
+          }
+        },
+        "gsd": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["min_cm_per_px", "mean_cm_per_px", "max_cm_per_px"],
+          "properties": {
+            "min_cm_per_px": { "$ref": "#/definitions/metric" },
+            "mean_cm_per_px": { "$ref": "#/definitions/metric" },
+            "max_cm_per_px": { "$ref": "#/definitions/metric" }
+          }
+        },
+        "geometry": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["dense_points", "point_density_per_m2", "checkpoint_horizontal_rmse_m", "checkpoint_vertical_rmse_m"],
+          "properties": {
+            "dense_points": { "$ref": "#/definitions/metric" },
+            "point_density_per_m2": { "$ref": "#/definitions/metric" },
+            "checkpoint_horizontal_rmse_m": { "$ref": "#/definitions/metric" },
+            "checkpoint_vertical_rmse_m": { "$ref": "#/definitions/metric" }
+          }
+        },
+        "mesh": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["vertices", "triangles", "texture_coverage_ratio", "manifold_ratio", "visual_score"],
+          "properties": {
+            "vertices": { "$ref": "#/definitions/metric" },
+            "triangles": { "$ref": "#/definitions/metric" },
+            "texture_coverage_ratio": { "$ref": "#/definitions/metric" },
+            "manifold_ratio": { "$ref": "#/definitions/metric" },
+            "visual_score": { "$ref": "#/definitions/metric" }
+          }
+        },
+        "gaussian": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["splat_count", "attribute_completeness_ratio", "psnr_db", "ssim", "lpips", "visual_score"],
+          "properties": {
+            "splat_count": { "$ref": "#/definitions/metric" },
+            "attribute_completeness_ratio": { "$ref": "#/definitions/metric" },
+            "psnr_db": { "$ref": "#/definitions/metric" },
+            "ssim": { "$ref": "#/definitions/metric" },
+            "lpips": { "$ref": "#/definitions/metric" },
+            "visual_score": { "$ref": "#/definitions/metric" }
+          }
+        },
+        "performance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "wall_time_s",
+            "peak_cpu_percent",
+            "peak_memory_bytes",
+            "peak_gpu_percent",
+            "peak_vram_bytes",
+            "peak_temp_disk_bytes",
+            "stages"
+          ],
+          "properties": {
+            "wall_time_s": { "$ref": "#/definitions/metric" },
+            "peak_cpu_percent": { "$ref": "#/definitions/metric" },
+            "peak_memory_bytes": { "$ref": "#/definitions/metric" },
+            "peak_gpu_percent": { "$ref": "#/definitions/metric" },
+            "peak_vram_bytes": { "$ref": "#/definitions/metric" },
+            "peak_temp_disk_bytes": { "$ref": "#/definitions/metric" },
+            "stages": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name", "status", "wall_time_s"],
+                "properties": {
+                  "name": { "type": "string", "minLength": 1 },
+                  "status": { "type": "string", "enum": ["success", "failure", "cancelled", "not-run"] },
+                  "wall_time_s": { "$ref": "#/definitions/metric" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "status", "bytes", "sha256", "format_validation", "spatial_validation"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "enum": ["published", "failed", "not-requested"] },
+        "bytes": { "type": ["integer", "null"], "minimum": 0 },
+        "sha256": { "type": ["string", "null"] },
+        "format_validation": { "type": "string", "enum": ["pass", "fail", "not-run"] },
+        "spatial_validation": { "type": "string", "enum": ["pass", "fail", "not-run", "not-applicable"] }
+      }
+    },
+    "acceptance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["overall", "criteria"],
+      "properties": {
+        "overall": { "type": "string", "enum": ["pass", "fail", "not-evaluated"] },
+        "criteria": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["expectation_id", "operator", "target", "actual", "result", "evidence"],
+            "properties": {
+              "expectation_id": { "type": "string", "minLength": 1 },
+              "operator": { "type": "string", "minLength": 1 },
+              "target": {},
+              "actual": {},
+              "result": { "type": "string", "enum": ["pass", "fail", "not-evaluated"] },
+              "evidence": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commands_redacted", "logs_sha256", "report_generated_by", "known_limits"],
+      "properties": {
+        "commands_redacted": { "type": "array", "items": { "type": "string" } },
+        "logs_sha256": { "type": "array", "items": { "type": "string" } },
+        "report_generated_by": { "type": "string", "minLength": 1 },
+        "known_limits": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

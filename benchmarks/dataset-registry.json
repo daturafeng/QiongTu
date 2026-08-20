@@ -1,0 +1,357 @@
+{
+  "$schema": "./schemas/dataset-registry.schema.json",
+  "schema_version": "1.1.0",
+  "datasets": [
+    {
+      "id": "owner-oblique-sample-v1",
+      "name": "Owner-provided private multi-angle sample",
+      "kind": "physical",
+      "roles": ["oblique-complex"],
+      "availability": "available-local",
+      "source_binding": "env:QIONGTU_OWNER_SAMPLE",
+      "identity": {
+        "method": "private-local-manifest",
+        "value": "env:QIONGTU_OWNER_SAMPLE_MANIFEST"
+      },
+      "source_policy": {
+        "mode": "read-only",
+        "redistribution": "not-authorized",
+        "contains_sensitive_geospatial_data": true,
+        "license_id": "project-owner-provided-no-redistribution",
+        "license_evidence_url": null,
+        "attribution": null,
+        "notes": "One private-local product sample, not the sole benchmark. Detailed identity and inventory stay in an ignored local artifact."
+      },
+      "composition": {
+        "inventory_status": "verified-private-local",
+        "media_family": "visible-light JPEG/MPO",
+        "capture_geometry": "multi-angle",
+        "positioning_sidecars": "present-private-local"
+      },
+      "observations": {
+        "detailed_inventory": "private-local",
+        "rtk_participation_in_processing": "not-yet-verified"
+      },
+      "expected_results": [
+        {
+          "id": "all-images-detected-as-mpo",
+          "phase": "ingestion",
+          "assertion": { "operator": "equals", "value": "all-private-manifest-images" },
+          "status": "fixed",
+          "rationale": "Every bound source image must be recognized from content; the exact count remains private-local."
+        },
+        {
+          "id": "main-frame-selection",
+          "phase": "ingestion",
+          "assertion": { "operator": "equals", "value": "highest-resolution-decodable-mpo-photography-frame" },
+          "status": "fixed",
+          "rationale": "Reconstruction must select the validated photography frame, not an auxiliary image or thumbnail."
+        },
+        {
+          "id": "standard-registration-ratio",
+          "phase": "alignment",
+          "assertion": { "operator": "greater-than-or-equal", "value": 0.9 },
+          "status": "provisional-until-engine-baseline",
+          "rationale": "Initial multi-angle gate; task 1.3 must approve or revise it."
+        },
+        {
+          "id": "oblique-output-set",
+          "phase": "output",
+          "assertion": {
+            "operator": "contains-all",
+            "value": ["dense-point-cloud", "textured-obj", "mesh-3d-tiles", "source-gaussian", "cesium-gaussian-3d-tiles"]
+          },
+          "status": "fixed",
+          "rationale": "The sample stresses complex geometry, vegetation, water, facade texture, and Gaussian rendering."
+        },
+        {
+          "id": "no-unproven-survey-claim",
+          "phase": "evidence",
+          "assertion": { "operator": "forbids", "value": "survey-grade-without-participation-and-check-evidence" },
+          "status": "fixed",
+          "rationale": "RTK fields and sidecars exist, but participation and independent accuracy are not demonstrated."
+        }
+      ],
+      "known_limits": [
+        "No independent surveyed check points are registered.",
+        "This capture cannot prove cross-device or cross-site generalization."
+      ]
+    },
+    {
+      "id": "usgs-fall-creek-20161109-v1",
+      "name": "USGS Fall Creek Lake 2016-11-09 UAS release",
+      "kind": "physical",
+      "roles": ["regular-nadir", "control-reference-accuracy", "cross-source-regression"],
+      "availability": "selected-remote",
+      "source_binding": "remote:https://doi.org/10.5066/P9AYWU8Z",
+      "identity": {
+        "method": "persistent-release-id",
+        "value": "doi:10.5066/P9AYWU8Z#USGS:5dfd4efae4b0b207aa00a15a"
+      },
+      "source_policy": {
+        "mode": "read-only",
+        "redistribution": "not-authorized",
+        "contains_sensitive_geospatial_data": true,
+        "license_id": "US-Public-Domain",
+        "license_evidence_url": "https://data.usgs.gov/datacatalog/data/USGS%3A5dfd4efae4b0b207aa00a15a",
+        "attribution": "Mangano, J.F., and Keith, M., 2020, USGS data release, doi:10.5066/P9AYWU8Z.",
+        "notes": "Raw images stay external; only release identity, expected metrics, and later hashes are recorded."
+      },
+      "composition": {
+        "capture_type": "UAS regular mapping",
+        "raw_delivery": "four image ZIP archives with CSV/KML location information",
+        "reference_delivery": ["ground-control-points", "point-cloud", "dem", "orthophotograph", "processing-report", "footprint"]
+      },
+      "observations": {
+        "official_model_gsd_cm_per_px": 2.86,
+        "official_average_point_density_per_m2": 76.6,
+        "official_dem_resolution_cm_per_cell": 11.4,
+        "content_manifest_status": "pending-materialization"
+      },
+      "expected_results": [
+        {
+          "id": "fall-creek-registration-ratio",
+          "phase": "alignment",
+          "assertion": { "operator": "greater-than-or-equal", "value": 0.95 },
+          "status": "provisional-until-engine-baseline",
+          "rationale": "Initial regular-mapping gate; task 1.3 must approve or revise it."
+        },
+        {
+          "id": "fall-creek-reference-gsd",
+          "phase": "output",
+          "assertion": { "operator": "reports", "value": { "official_cm_per_px": 2.86 } },
+          "status": "fixed",
+          "rationale": "The official value is comparison evidence; generated GSD must be measured independently."
+        },
+        {
+          "id": "fall-creek-output-set",
+          "phase": "output",
+          "assertion": { "operator": "contains-all", "value": ["dom-geotiff", "dsm-geotiff", "dense-point-cloud", "quality-report"] },
+          "status": "fixed",
+          "rationale": "The release provides independent products for format and scale comparison."
+        },
+        {
+          "id": "fall-creek-accuracy-evidence",
+          "phase": "evidence",
+          "assertion": { "operator": "reports", "value": ["gcp-used", "checkpoints-used", "horizontal-rmse", "vertical-rmse"] },
+          "status": "fixed",
+          "rationale": "Ground control and checks must be distinguished; unavailable evidence stays not measured."
+        }
+      ],
+      "known_limits": [
+        "Archive sizes, image count, and content SHA-256 are pending download approval.",
+        "Reference products are comparison evidence, not guaranteed identical outputs."
+      ]
+    },
+    {
+      "id": "usgs-medina-river-2019-2022-v1",
+      "name": "USGS Medina River UAS imagery and products 2019/2022",
+      "kind": "physical",
+      "roles": ["control-reference-accuracy", "cross-source-regression"],
+      "availability": "selected-remote",
+      "source_binding": "remote:https://doi.org/10.5066/P9KN8RG0",
+      "identity": {
+        "method": "persistent-release-id",
+        "value": "doi:10.5066/P9KN8RG0#USGS:633c7d3dd34e900e86cf1a53"
+      },
+      "source_policy": {
+        "mode": "read-only",
+        "redistribution": "not-authorized",
+        "contains_sensitive_geospatial_data": true,
+        "license_id": "US-Public-Domain",
+        "license_evidence_url": "https://data.usgs.gov/datacatalog/data/USGS%3A633c7d3dd34e900e86cf1a53",
+        "attribution": "Mecum, K.E., 2023, USGS data release, doi:10.5066/P9KN8RG0.",
+        "notes": "Independent public-domain source with imagery, GCPs, point clouds, DSMs, and orthomosaics."
+      },
+      "composition": {
+        "capture_dates": 2,
+        "capture_type": "UAS erosion monitoring",
+        "reference_delivery": ["ground-control-points", "point-cloud", "dsm", "orthomosaic"]
+      },
+      "observations": {
+        "content_manifest_status": "pending-materialization",
+        "cross_date_comparison_available": true
+      },
+      "expected_results": [
+        {
+          "id": "medina-release-components",
+          "phase": "ingestion",
+          "assertion": { "operator": "contains-all", "value": ["raw-imagery", "ground-control-points"] },
+          "status": "fixed",
+          "rationale": "The official release states that imagery and GCP information are included."
+        },
+        {
+          "id": "medina-registration-ratio",
+          "phase": "alignment",
+          "assertion": { "operator": "greater-than-or-equal", "value": 0.95 },
+          "status": "provisional-until-engine-baseline",
+          "rationale": "Initial independent-source gate; task 1.3 must approve or revise it per capture date."
+        },
+        {
+          "id": "medina-output-set",
+          "phase": "output",
+          "assertion": { "operator": "contains-all", "value": ["dom-geotiff", "dsm-geotiff", "dense-point-cloud", "quality-report"] },
+          "status": "fixed",
+          "rationale": "The official release includes comparable point-cloud, DSM, and orthomosaic products."
+        }
+      ],
+      "known_limits": [
+        "Exact file inventory and checksums are pending download approval.",
+        "Each capture date needs a separate benchmark record after materialization."
+      ]
+    },
+    {
+      "id": "usgs-fall-creek-gaussian-holdout-v1",
+      "name": "Fall Creek deterministic Gaussian train/validation split",
+      "kind": "logical-subset",
+      "roles": ["gaussian-novel-view"],
+      "availability": "derived-on-demand",
+      "source_binding": "logical:usgs-fall-creek-20161109-v1#capture-order-modulo-10",
+      "identity": {
+        "method": "recipe-version",
+        "value": "recipe:fall-creek-gaussian-holdout-v1"
+      },
+      "source_policy": {
+        "mode": "read-only",
+        "redistribution": "recipe-only",
+        "contains_sensitive_geospatial_data": true,
+        "license_id": "US-Public-Domain",
+        "license_evidence_url": "https://data.usgs.gov/datacatalog/data/USGS%3A5dfd4efae4b0b207aa00a15a",
+        "attribution": "Derived split of Mangano and Keith (2020), doi:10.5066/P9AYWU8Z.",
+        "notes": "Validation images are held out deterministically; the source stays external and immutable."
+      },
+      "composition": {
+        "base_dataset": "usgs-fall-creek-20161109-v1",
+        "ordering": "capture-time-then-content-hash",
+        "validation_rule": "zero-based-index modulo 10 equals 0",
+        "training_rule": "all remaining valid images"
+      },
+      "expected_results": [
+        {
+          "id": "gaussian-source-attribute-completeness",
+          "phase": "output",
+          "assertion": { "operator": "equals", "value": 1.0 },
+          "status": "fixed",
+          "rationale": "Every source Gaussian needs position, rotation, scale, opacity, and color or SH attributes."
+        },
+        {
+          "id": "gaussian-holdout-psnr",
+          "phase": "output",
+          "assertion": { "operator": "greater-than-or-equal", "value": 20.0 },
+          "status": "provisional-until-engine-baseline",
+          "rationale": "Initial dB gate; task 1.4 must approve or revise it using fixed held-out views."
+        },
+        {
+          "id": "gaussian-holdout-ssim",
+          "phase": "output",
+          "assertion": { "operator": "greater-than-or-equal", "value": 0.65 },
+          "status": "provisional-until-engine-baseline",
+          "rationale": "Initial SSIM gate; task 1.4 must approve or revise it."
+        },
+        {
+          "id": "gaussian-holdout-lpips",
+          "phase": "output",
+          "assertion": { "operator": "less-than-or-equal", "value": 0.45 },
+          "status": "provisional-until-engine-baseline",
+          "rationale": "Initial LPIPS gate; task 1.4 must approve or revise it."
+        }
+      ],
+      "known_limits": [
+        "Split counts and content hashes await source materialization.",
+        "Nadir held-out rendering does not replace oblique visual review on the owner sample."
+      ]
+    },
+    {
+      "id": "usgs-public-domain-fault-fixtures-v1",
+      "name": "Deterministic ingestion and quality-control fault fixtures",
+      "kind": "derived-fixtures",
+      "roles": ["failure-quality-control"],
+      "availability": "derived-on-demand",
+      "source_binding": "derived:usgs-fall-creek-20161109-v1#isolated-copy-recipes-v1",
+      "identity": {
+        "method": "recipe-version",
+        "value": "recipe:qiongtu-usgs-fault-fixtures-v1"
+      },
+      "source_policy": {
+        "mode": "read-only",
+        "redistribution": "recipe-only",
+        "contains_sensitive_geospatial_data": true,
+        "license_id": "US-Public-Domain",
+        "license_evidence_url": "https://data.usgs.gov/datacatalog/data/USGS%3A5dfd4efae4b0b207aa00a15a",
+        "attribution": "Fault recipes based on Mangano and Keith (2020), doi:10.5066/P9AYWU8Z.",
+        "notes": "Recipes affect disposable copies or logical manifests and never mutate authoritative inputs."
+      },
+      "composition": { "base_dataset": "usgs-fall-creek-20161109-v1", "fixture_count": 6 },
+      "derivation_recipes": [
+        {
+          "id": "duplicate-content",
+          "operation": "Add a second processing reference to one unchanged copied image.",
+          "source_selection": "First image in content-hash order.",
+          "parameters": { "extra_references": 1 },
+          "expected_outcome": "Report one duplicate warning and retain one processing reference.",
+          "source_mutation_allowed": false
+        },
+        {
+          "id": "corrupt-truncated",
+          "operation": "Truncate one disposable copy at 50 percent of its byte length.",
+          "source_selection": "Second image in content-hash order.",
+          "parameters": { "retained_ratio": 0.5 },
+          "expected_outcome": "Isolate it as unreadable and continue checking the batch.",
+          "source_mutation_allowed": false
+        },
+        {
+          "id": "missing-gps",
+          "operation": "Remove GPS and manufacturer position fields from one disposable copy.",
+          "source_selection": "Third image in content-hash order.",
+          "parameters": { "remove": ["EXIF-GPS", "manufacturer-position"] },
+          "expected_outcome": "Report missing positioning and forbid unconfirmed absolute georeferencing.",
+          "source_mutation_allowed": false
+        },
+        {
+          "id": "blurred-image",
+          "operation": "Create one disposable copy with deterministic Gaussian blur.",
+          "source_selection": "Fourth image in content-hash order.",
+          "parameters": { "sigma_px": 4.0 },
+          "expected_outcome": "Report blur risk with score and threshold.",
+          "source_mutation_allowed": false
+        },
+        {
+          "id": "low-overlap-sequence",
+          "operation": "Create a logical sequence using every eighth capture.",
+          "source_selection": "usgs-fall-creek-20161109-v1",
+          "parameters": { "stride": 8 },
+          "expected_outcome": "Report low-overlap risk or explicit not-evaluable evidence.",
+          "source_mutation_allowed": false
+        },
+        {
+          "id": "empty-batch",
+          "operation": "Create an empty logical input manifest.",
+          "source_selection": "No files.",
+          "parameters": {},
+          "expected_outcome": "Block processing because no valid input can be formed.",
+          "source_mutation_allowed": false
+        }
+      ],
+      "expected_results": [
+        {
+          "id": "all-fixture-outcomes-reported",
+          "phase": "quality-control",
+          "assertion": { "operator": "reports", "value": 6 },
+          "status": "fixed",
+          "rationale": "Each recipe has a distinct warning or blocking outcome."
+        },
+        {
+          "id": "authoritative-source-unchanged",
+          "phase": "evidence",
+          "assertion": { "operator": "equals", "value": true },
+          "status": "fixed",
+          "rationale": "Fault injection is valid only if the physical source fingerprint stays unchanged."
+        }
+      ],
+      "known_limits": [
+        "Fixtures require public source materialization.",
+        "Derived pixel data remains local-only and ignored by Git."
+      ]
+    }
+  ]
+}

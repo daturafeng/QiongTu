@@ -1,4 +1,4 @@
-# Createmodel 项目开发规则
+# QiongTu 项目开发规则
 
 本文件适用于整个仓库。详细且可验收的开发治理规范以 `openspec/specs/development-governance/spec.md` 为唯一事实来源；若该主规格尚未生成，读取活动变更 `openspec/changes/establish-development-governance/`。本文件只提供后续会话必须自动执行的入口规则。若两者不一致，先创建或更新 OpenSpec 变更使其一致，详细主规格优先。
 

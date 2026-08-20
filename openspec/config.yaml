@@ -15,9 +15,9 @@ context: |
   openspec/specs/development-governance/spec.md before software work. Requirements or
   technical decisions must be updated in OpenSpec before implementation changes.
   Repository: https://github.com/daturafeng/QiongTu.git with main as the default branch.
-  Environment: this directory may not yet be a Git repository. OpenSpec may be installed
-  under an NVM-managed Node version rather than the current PATH; discover it read-only
-  and require Node.js 20.19+ without changing the user's active NVM version.
+  Environment: this project is a Git repository. OpenSpec requires Node.js 20.19+ and
+  may be installed under an NVM-managed Node version; if unavailable on PATH, discover
+  it read-only without changing the user's active NVM version.
 
 rules:
   proposal:

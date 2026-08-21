@@ -1,0 +1,26 @@
+{
+  "name": "@qiongtu/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist-electron/main/index.js",
+  "scripts": {
+    "pretypecheck": "npm --workspace @qiongtu/contracts run typecheck",
+    "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
+    "prelint": "npm --workspace @qiongtu/contracts run lint",
+    "lint": "eslint main preload renderer vite.config.ts --max-warnings 0",
+    "pretest": "npm --workspace @qiongtu/contracts run test",
+    "test": "vitest run",
+    "prebuild": "npm --workspace @qiongtu/contracts run build",
+    "build": "tsc -p tsconfig.main.json && vite build",
+    "smoke": "electron . --smoke",
+    "control:smoke": "electron . --control-smoke",
+    "start": "electron ."
+  },
+  "dependencies": {
+    "@qiongtu/contracts": "0.1.0",
+    "cesium": "1.144.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  }
+}

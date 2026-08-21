@@ -24,7 +24,13 @@ cache/
 # Dependencies and build outputs
 node_modules/
 dist/
+dist-electron/
 build/
+bin/
+obj/
+TestResults/
+coverage/
+out/
 target/
 .gradle/
 .venv/

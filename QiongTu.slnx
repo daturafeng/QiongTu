@@ -1,0 +1,26 @@
+<Solution>
+  <Folder Name="/apps/" />
+  <Folder Name="/apps/launcher/" />
+  <Folder Name="/apps/launcher/src/">
+    <Project Path="apps/launcher/src/QiongTu.Launcher/QiongTu.Launcher.csproj" />
+  </Folder>
+  <Folder Name="/apps/launcher/tests/">
+    <Project Path="apps/launcher/tests/QiongTu.Launcher.Tests/QiongTu.Launcher.Tests.csproj" />
+  </Folder>
+  <Folder Name="/apps/launcher/tools/">
+    <Project Path="apps/launcher/tools/QiongTu.Launcher.SmokeHost/QiongTu.Launcher.SmokeHost.csproj" />
+  </Folder>
+  <Folder Name="/packages/" />
+  <Folder Name="/packages/contracts/" />
+  <Folder Name="/packages/contracts/dotnet/">
+    <Project Path="packages/contracts/dotnet/QiongTu.Contracts/QiongTu.Contracts.csproj" />
+  </Folder>
+  <Folder Name="/services/" />
+  <Folder Name="/services/control/" />
+  <Folder Name="/services/control/src/">
+    <Project Path="services/control/src/QiongTu.Control/QiongTu.Control.csproj" />
+  </Folder>
+  <Folder Name="/services/control/tests/">
+    <Project Path="services/control/tests/QiongTu.Control.Tests/QiongTu.Control.Tests.csproj" />
+  </Folder>
+</Solution>

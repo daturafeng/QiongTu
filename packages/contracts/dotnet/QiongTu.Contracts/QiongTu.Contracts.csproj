@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>QiongTu.Contracts</AssemblyName>
+    <RootNamespace>QiongTu.Contracts</RootNamespace>
+  </PropertyGroup>
+</Project>

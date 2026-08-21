@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node", "electron"],
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "noEmit": false,
+    "outDir": "dist-electron",
+    "rootDir": ".",
+    "sourceMap": true
+  },
+  "include": ["main/**/*.ts", "preload/**/*.ts", "vite.config.ts"]
+}

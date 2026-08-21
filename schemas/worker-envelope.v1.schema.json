@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qiongtu.local/schemas/worker-envelope.v1.schema.json",
+  "title": "QiongTu Worker Envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractVersion", "messageId", "messageType", "payload"],
+  "properties": {
+    "contractVersion": { "const": "qiongtu.worker-contract.v1" },
+    "messageId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "messageType": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "payload": {}
+  }
+}

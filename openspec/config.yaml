@@ -2,6 +2,9 @@ schema: spec-driven
 
 context: |
   Product: Windows x64 desktop software comparable to DJI Terra for processing drone imagery.
+  Initial input scope: visible-light imagery captured by supported DJI drones only;
+  other drone manufacturers and generic camera imagery are deferred until after the
+  initial product workflow has been validated and require a future OpenSpec change.
   Core outputs: DOM/DSM GeoTIFF, LAS/LAZ/PLY point clouds, textured OBJ/FBX,
   mesh 3D Tiles, source Gaussian splats, and Cesium-compatible Gaussian 3D Tiles.
   Runtime direction: local desktop shell and services; NVIDIA CUDA is the first

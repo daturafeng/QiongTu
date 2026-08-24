@@ -25,13 +25,20 @@ public sealed class ControlApplication
         var pipeName = RuntimeDiscovery.CreatePipeName();
         var businessDatabase = new BusinessDatabase(_paths.BusinessDatabase);
         businessDatabase.Initialize();
+        var businessCatalog = new BusinessCatalog(businessDatabase);
         var store = new WorkerRuntimeStore(_paths.RuntimeDatabase);
         store.Initialize();
-        using var workers = new WorkerSupervisor(_workerRegistry, store, _paths.LogDirectory);
+        var capabilityService = new ProcessingCapabilityService(_workerRegistry, _paths);
+        using var workers = new WorkerSupervisor(
+            _workerRegistry,
+            store,
+            _paths.LogDirectory,
+            capabilityService);
         workers.ReconcilePersistedWorkers();
 
+        var objectStore = new ContentAddressedObjectStore(_paths.ObjectDirectory);
         var roots = new ArtifactRootRegistry();
-        roots.RegisterTrustedRoot("objects", _paths.ObjectDirectory);
+        roots.RegisterTrustedRoot("objects", objectStore.PublishedDirectory);
         await using var artifactServer = new ArtifactServer(roots);
         await artifactServer.StartAsync(cancellationToken);
 
@@ -44,6 +51,8 @@ public sealed class ControlApplication
             startedAtUtc,
             artifactServer,
             workers,
+            businessCatalog,
+            capabilityService,
             internalShutdown.Cancel);
         await using var pipeServer = new NamedPipeControlServer(pipeName, dispatcher);
         pipeServer.Start();

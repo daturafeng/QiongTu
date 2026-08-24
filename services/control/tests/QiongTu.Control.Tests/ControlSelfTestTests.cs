@@ -14,6 +14,8 @@ public sealed class ControlSelfTestTests
         Assert.AreEqual("ok", result.Status);
         Assert.AreEqual("named-pipe", result.Boundary.EndpointKind);
         Assert.IsFalse(result.Boundary.LanBindingAllowed);
-        Assert.HasCount(6, result.Checks);
+        Assert.HasCount(9, result.Checks);
+        Assert.IsTrue(result.Checks.Any(check => check.Contains("capability", StringComparison.OrdinalIgnoreCase)));
+        Assert.IsTrue(result.Checks.Any(check => check.Contains("isolated child", StringComparison.OrdinalIgnoreCase)));
     }
 }

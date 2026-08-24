@@ -18,12 +18,16 @@ public sealed class ControlLifecycleIntegrationTests
         var paths = ControlDataPaths.Create(testRoot);
         var store = new WorkerRuntimeStore(paths.RuntimeDatabase);
         store.Initialize();
+        var businessDatabase = new BusinessDatabase(paths.BusinessDatabase);
+        businessDatabase.Initialize();
+        var businessCatalog = new BusinessCatalog(businessDatabase);
         var registry = new WorkerRegistry();
         registry.Register(new WorkerDefinition(
             "lifecycle-probe",
             Path.Combine(Environment.SystemDirectory, "ping.exe"),
             ["-n", "120", "127.0.0.1"],
             paths.RuntimeDirectory));
+        var capabilities = new ProcessingCapabilityService(registry, paths);
 
         using var workers = new WorkerSupervisor(registry, store, paths.LogDirectory);
         var roots = new ArtifactRootRegistry();
@@ -37,6 +41,8 @@ public sealed class ControlLifecycleIntegrationTests
             DateTimeOffset.UtcNow,
             artifactServer,
             workers,
+            businessCatalog,
+            capabilities,
             () => stopRequested = true);
         await using var server = new NamedPipeControlServer(pipeName, dispatcher);
         server.Start();

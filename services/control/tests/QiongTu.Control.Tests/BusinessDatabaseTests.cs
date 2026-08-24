@@ -1,4 +1,6 @@
 using Microsoft.Data.Sqlite;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace QiongTu.Control.Tests;
 
@@ -14,8 +16,8 @@ public sealed class BusinessDatabaseTests
         database.Initialize();
 
         using var connection = database.OpenConnection();
-        Assert.AreEqual(1L, Scalar<long>(connection, "PRAGMA user_version;"));
-        Assert.AreEqual(1L, Scalar<long>(connection, "SELECT count(*) FROM schema_migrations;"));
+        Assert.AreEqual((long)BusinessDatabase.CurrentSchemaVersion, Scalar<long>(connection, "PRAGMA user_version;"));
+        Assert.AreEqual((long)BusinessDatabase.CurrentSchemaVersion, Scalar<long>(connection, "SELECT count(*) FROM schema_migrations;"));
         Assert.AreEqual(1L, Scalar<long>(connection, "PRAGMA foreign_keys;"));
         Assert.AreEqual(5_000L, Scalar<long>(connection, "PRAGMA busy_timeout;"));
         Assert.AreEqual(2L, Scalar<long>(connection, "PRAGMA synchronous;"));
@@ -57,7 +59,7 @@ public sealed class BusinessDatabaseTests
             Task.Run(() => new BusinessDatabase(scope.DatabasePath).Initialize()));
 
         using var finalConnection = first.OpenConnection();
-        Assert.AreEqual(1L, Scalar<long>(finalConnection, "SELECT count(*) FROM schema_migrations;"));
+        Assert.AreEqual((long)BusinessDatabase.CurrentSchemaVersion, Scalar<long>(finalConnection, "SELECT count(*) FROM schema_migrations;"));
         Assert.AreEqual(appliedAt, Scalar<string>(finalConnection, "SELECT applied_at_utc FROM schema_migrations WHERE version=1;"));
     }
 
@@ -69,7 +71,7 @@ public sealed class BusinessDatabaseTests
         using (var connection = OpenRaw(futureScope.DatabasePath))
         {
             Execute(connection, "CREATE TABLE future_data(id INTEGER PRIMARY KEY);");
-            Execute(connection, "PRAGMA user_version = 2;");
+            Execute(connection, $"PRAGMA user_version = {BusinessDatabase.CurrentSchemaVersion + 1};");
         }
 
         var futureException = Assert.Throws<BusinessDatabaseException>(future.Initialize);
@@ -96,19 +98,65 @@ public sealed class BusinessDatabaseTests
     public void FailedMigrationRollsBackWithoutPartialSchemaOrLedgerEntry()
     {
         using var scope = new DatabaseScope();
-        var brokenMigration = BusinessMigration.Create(
+        var baselineMigration = BusinessMigration.Create(
             1,
-            "0001_broken.sql",
+            "0001_baseline.sql",
+            "CREATE TABLE baseline(id INTEGER PRIMARY KEY);");
+        var secondMigration = BusinessMigration.Create(
+            2,
+            "0002_second.sql",
+            "CREATE TABLE second(id INTEGER PRIMARY KEY);");
+        var brokenMigration = BusinessMigration.Create(
+            3,
+            "0003_broken.sql",
             "CREATE TABLE rolled_back(id INTEGER PRIMARY KEY); THIS IS NOT SQL;");
-        var database = new BusinessDatabase(scope.DatabasePath, [brokenMigration]);
+        var database = new BusinessDatabase(scope.DatabasePath, [baselineMigration, secondMigration, brokenMigration]);
 
         var exception = Assert.Throws<BusinessDatabaseException>(database.Initialize);
 
         Assert.AreEqual("business_database_migration_failed", exception.Code);
         using var connection = database.OpenConnection();
-        Assert.AreEqual(0L, Scalar<long>(connection, "SELECT count(*) FROM schema_migrations;"));
+        Assert.AreEqual(2L, Scalar<long>(connection, "SELECT count(*) FROM schema_migrations;"));
         Assert.AreEqual(0L, Scalar<long>(connection, "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='rolled_back';"));
-        Assert.AreEqual(0L, Scalar<long>(connection, "PRAGMA user_version;"));
+        Assert.AreEqual(2L, Scalar<long>(connection, "PRAGMA user_version;"));
+    }
+
+    [TestMethod]
+    public void VersionOneDatabaseAppliesNewerMigrationsWithoutRewritingFirstMigration()
+    {
+        using var scope = new DatabaseScope();
+        CreateVersionOneDatabase(scope.DatabasePath);
+
+        new BusinessDatabase(scope.DatabasePath).Initialize();
+
+        using var upgraded = OpenRaw(scope.DatabasePath);
+        Assert.AreEqual((long)BusinessDatabase.CurrentSchemaVersion, Scalar<long>(upgraded, "PRAGMA user_version;"));
+        Assert.AreEqual((long)BusinessDatabase.CurrentSchemaVersion, Scalar<long>(upgraded, "SELECT count(*) FROM schema_migrations;"));
+        Assert.AreEqual(1L, Scalar<long>(upgraded, "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='projects';"));
+        AssertSqlRejected(upgraded,
+            "INSERT INTO file_objects(file_object_id,object_kind,hash_algorithm,content_hash,byte_length,object_key,storage_state,created_at_utc) VALUES('invalid-v2-key','formal_output','sha256','ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',1,'staging/not-formal','available','t');");
+    }
+
+    [TestMethod]
+    public void InvalidVersionOneAvailableObjectBlocksUpgradeWithoutChangingExistingData()
+    {
+        using var scope = new DatabaseScope();
+        CreateVersionOneDatabase(
+            scope.DatabasePath,
+            connection => Execute(connection,
+                "INSERT INTO file_objects(file_object_id,object_kind,hash_algorithm,content_hash,byte_length,object_key,storage_state,created_at_utc) VALUES('legacy-invalid','formal_output','sha256','eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',1,'legacy/wrong-key','available','t');"));
+
+        var exception = Assert.Throws<BusinessDatabaseException>(
+            () => new BusinessDatabase(scope.DatabasePath).Initialize());
+
+        Assert.AreEqual("business_database_migration_failed", exception.Code);
+        using var preserved = OpenRaw(scope.DatabasePath);
+        Assert.AreEqual(1L, Scalar<long>(preserved, "PRAGMA user_version;"));
+        Assert.AreEqual(1L, Scalar<long>(preserved, "SELECT count(*) FROM schema_migrations;"));
+        Assert.AreEqual("legacy/wrong-key", Scalar<string>(preserved,
+            "SELECT object_key FROM file_objects WHERE file_object_id='legacy-invalid';"));
+        Assert.AreEqual(0L, Scalar<long>(preserved,
+            "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='migration_0002_available_object_guard';"));
     }
 
     [TestMethod]
@@ -128,6 +176,8 @@ public sealed class BusinessDatabaseTests
 
         AssertSqlRejected(connection,
             "INSERT INTO datasets(dataset_id,project_id,name,lifecycle_state,created_at_utc,updated_at_utc) VALUES('bad','missing','Bad','active','t','t');");
+        AssertSqlRejected(connection,
+            "INSERT INTO file_objects(file_object_id,object_kind,hash_algorithm,content_hash,byte_length,object_key,storage_state,created_at_utc) VALUES('bad-key','formal_output','sha256','eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',1,'staging/not-formal','available','t');");
         AssertSqlRejected(connection, "UPDATE projects SET lifecycle_state='invalid' WHERE project_id='project-1';");
         AssertSqlRejected(connection, "UPDATE dataset_versions SET quality_gate_state='passed' WHERE dataset_version_id='dataset-version-1';");
         AssertSqlRejected(connection, "DELETE FROM images WHERE image_id='image-1';");
@@ -178,6 +228,37 @@ public sealed class BusinessDatabaseTests
         return connection;
     }
 
+    private static void CreateVersionOneDatabase(
+        string databasePath,
+        Action<SqliteConnection>? seed = null)
+    {
+        var assembly = typeof(BusinessDatabase).Assembly;
+        var resourceName = assembly.GetManifestResourceNames()
+            .Single(name => name.EndsWith(".Migrations.Business.0001_initial.sql", StringComparison.Ordinal));
+        string migrationSql;
+        using (var stream = assembly.GetManifestResourceStream(resourceName)!)
+        using (var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true))
+        {
+            migrationSql = reader.ReadToEnd();
+        }
+
+        var checksum = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(migrationSql))).ToLowerInvariant();
+        using var connection = OpenRaw(databasePath);
+        Execute(connection,
+            "CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,name TEXT NOT NULL,sql_sha256 TEXT NOT NULL CHECK(length(sql_sha256)=64),applied_at_utc TEXT NOT NULL);");
+        Execute(connection, migrationSql);
+        using (var register = connection.CreateCommand())
+        {
+            register.CommandText =
+                "INSERT INTO schema_migrations(version,name,sql_sha256,applied_at_utc) VALUES(1,'0001_initial.sql',$checksum,'2026-08-21T00:00:00Z');";
+            register.Parameters.AddWithValue("$checksum", checksum);
+            register.ExecuteNonQuery();
+        }
+
+        Execute(connection, "PRAGMA user_version = 1;");
+        seed?.Invoke(connection);
+    }
+
     private static T Scalar<T>(SqliteConnection connection, string sql)
     {
         using var command = connection.CreateCommand();
@@ -216,9 +297,9 @@ public sealed class BusinessDatabaseTests
         INSERT INTO datasets(dataset_id,project_id,name,lifecycle_state,created_at_utc,updated_at_utc)
         VALUES('dataset-1','project-1','Flight 1','active','2026-08-21T00:00:00Z','2026-08-21T00:00:00Z');
         INSERT INTO file_objects(file_object_id,object_kind,hash_algorithm,content_hash,byte_length,media_type,object_key,storage_state,created_at_utc,available_at_utc)
-        VALUES('source-file','source_image','sha256','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',100,'image/jpeg','sha256/aa/source','available','2026-08-21T00:00:00Z','2026-08-21T00:00:00Z');
+        VALUES('source-file','source_image','sha256','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',100,'image/jpeg','sha256/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','available','2026-08-21T00:00:00Z','2026-08-21T00:00:00Z');
         INSERT INTO file_objects(file_object_id,object_kind,hash_algorithm,content_hash,byte_length,media_type,object_key,storage_state,created_at_utc,available_at_utc)
-        VALUES('position-file','positioning_aux','sha256','dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',80,'text/plain','sha256/dd/position','available','2026-08-21T00:00:00Z','2026-08-21T00:00:00Z');
+        VALUES('position-file','positioning_aux','sha256','dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',80,'text/plain','sha256/dd/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd','available','2026-08-21T00:00:00Z','2026-08-21T00:00:00Z');
         INSERT INTO dataset_versions(dataset_version_id,dataset_id,version_number,lifecycle_state,source_eligibility_state,quality_gate_state,created_at_utc)
         VALUES('dataset-version-1','dataset-1',1,'draft','dji_supported','passed','2026-08-21T00:00:00Z');
         INSERT INTO images(image_id,dataset_version_id,source_file_object_id,import_source_key,sort_index,content_container,primary_frame_index,width,height,manufacturer,camera_model,image_state,metadata_state,created_at_utc)
@@ -236,7 +317,7 @@ public sealed class BusinessDatabaseTests
         INSERT INTO positioning_aux_usage(positioning_aux_usage_id,positioning_aux_file_id,job_execution_id,usage_state,evidence_json,recorded_at_utc)
         VALUES('positioning-usage-1','positioning-1','execution-1','used','{"records":1}','2026-08-21T01:00:00Z');
         INSERT INTO file_objects(file_object_id,object_kind,hash_algorithm,content_hash,byte_length,media_type,object_key,storage_state,created_at_utc,available_at_utc)
-        VALUES('output-file','formal_output','sha256','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',200,'image/tiff','sha256/bb/output','available','2026-08-21T01:00:00Z','2026-08-21T01:00:00Z');
+        VALUES('output-file','formal_output','sha256','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',200,'image/tiff','sha256/bb/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb','available','2026-08-21T01:00:00Z','2026-08-21T01:00:00Z');
         INSERT INTO result_series(result_series_id,project_id,dataset_version_id,series_kind,name,created_at_utc)
         VALUES('series-1','project-1','dataset-version-1','dom','DOM','2026-08-21T01:00:00Z');
         INSERT INTO results(result_id,result_series_id,version_number,source_dataset_version_id,source_processing_job_id,source_job_execution_id,result_kind,lifecycle_state,crs_id,unit,bounds_json,parameter_sha256,accuracy_level,created_at_utc)

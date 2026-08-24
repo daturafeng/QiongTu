@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-项目目前处于产品骨架与引擎基准阶段，尚未接入正式影像处理引擎。仓库已包含固定版本的 Electron/React 桌面壳、自包含 .NET 控制服务、Worker 生命周期边界，以及在 Electron 窗口无法启动时仍可工作的原生 `QiongTu.Launcher` 启动诊断骨架。当前活动产品定义见 [`define-drone-mapping-platform`](openspec/changes/define-drone-mapping-platform/proposal.md)。
+项目目前处于产品骨架与引擎基准阶段，尚未接入正式影像处理引擎。仓库已包含固定版本的 Electron/React 桌面壳、自包含 .NET 控制服务、Worker 生命周期边界、权威业务数据库、带暂存/隔离/正式命名空间的内容校验对象存储，以及在 Electron 窗口无法启动时仍可工作的原生 `QiongTu.Launcher` 启动诊断骨架。当前活动产品定义见 [`define-drone-mapping-platform`](openspec/changes/define-drone-mapping-platform/proposal.md)。
 
 ## 开发方式
 

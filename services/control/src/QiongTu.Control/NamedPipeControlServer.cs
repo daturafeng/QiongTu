@@ -9,6 +9,7 @@ namespace QiongTu.Control;
 public sealed class NamedPipeControlServer : IAsyncDisposable
 {
     public const int MaximumMessageCharacters = 64 * 1024;
+    public const int MaximumResponseBytes = 64 * 1024;
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private readonly string _pipeName;
     private readonly ControlRequestDispatcher _dispatcher;
@@ -97,14 +98,13 @@ public sealed class NamedPipeControlServer : IAsyncDisposable
                 }
                 catch (ControlProtocolException exception)
                 {
-                    await writer.WriteLineAsync(JsonSerializer.Serialize(
+                    await writer.WriteLineAsync(SerializeBoundedResponse(
                         new ControlResponse(
                             ContractVersions.ControlApiV1,
                             string.Empty,
                             false,
                             null,
-                            new ControlError(exception.Code, exception.Message)),
-                        SerializerOptions));
+                            new ControlError(exception.Code, exception.Message))));
                     break;
                 }
 
@@ -130,9 +130,29 @@ public sealed class NamedPipeControlServer : IAsyncDisposable
                         new ControlError("invalid_json", "The request is not valid control JSON."));
                 }
 
-                await writer.WriteLineAsync(JsonSerializer.Serialize(response, SerializerOptions));
+                await writer.WriteLineAsync(SerializeBoundedResponse(response));
             }
         }
+    }
+
+    internal static string SerializeBoundedResponse(ControlResponse response)
+    {
+        var json = JsonSerializer.Serialize(response, SerializerOptions);
+        if (Encoding.UTF8.GetByteCount(json) <= MaximumResponseBytes)
+        {
+            return json;
+        }
+
+        return JsonSerializer.Serialize(
+            new ControlResponse(
+                ContractVersions.ControlApiV1,
+                response.RequestId,
+                false,
+                null,
+                new ControlError(
+                    "response_too_large",
+                    "The control response exceeds the bounded message size; request a smaller page.")),
+            SerializerOptions);
     }
 
     internal static async Task<string?> ReadBoundedLineAsync(

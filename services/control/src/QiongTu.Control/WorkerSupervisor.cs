@@ -17,15 +17,21 @@ public sealed class WorkerSupervisor : IDisposable
     private readonly WorkerRegistry _registry;
     private readonly WorkerRuntimeStore _store;
     private readonly string _logDirectory;
+    private readonly IWorkerAdmissionGate? _admissionGate;
     private readonly ConcurrentDictionary<string, Process> _processes = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, byte> _cancelRequested = new(StringComparer.Ordinal);
     private bool _disposed;
 
-    public WorkerSupervisor(WorkerRegistry registry, WorkerRuntimeStore store, string logDirectory)
+    internal WorkerSupervisor(
+        WorkerRegistry registry,
+        WorkerRuntimeStore store,
+        string logDirectory,
+        IWorkerAdmissionGate? admissionGate = null)
     {
         _registry = registry;
         _store = store;
         _logDirectory = logDirectory;
+        _admissionGate = admissionGate;
         Directory.CreateDirectory(logDirectory);
     }
 
@@ -63,6 +69,44 @@ public sealed class WorkerSupervisor : IDisposable
         {
             throw new ControlProtocolException("worker_not_registered", "The requested worker type is not registered.");
         }
+
+        return StartCore(workerType, definition);
+    }
+
+    public async Task<WorkerSnapshot> StartAsync(
+        string workerType,
+        CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (!_registry.TryGet(workerType, out var definition))
+        {
+            throw new ControlProtocolException("worker_not_registered", "The requested worker type is not registered.");
+        }
+
+        if (_admissionGate is not null)
+        {
+            var admission = await _admissionGate.CheckAsync(definition, cancellationToken);
+            if (admission.Decision == "denied")
+            {
+                throw new ControlProtocolException(
+                    "worker_admission_denied",
+                    "The registered worker does not satisfy its fixed capability requirements.");
+            }
+
+            if (admission.Decision == "unknown")
+            {
+                throw new ControlProtocolException(
+                    "worker_admission_unknown",
+                    "The registered worker capability requirements could not be verified safely.");
+            }
+        }
+
+        return StartCore(workerType, definition);
+    }
+
+    private WorkerSnapshot StartCore(string workerType, WorkerDefinition definition)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
 
         var workerId = Guid.NewGuid().ToString("N");
         var startedAt = DateTimeOffset.UtcNow;

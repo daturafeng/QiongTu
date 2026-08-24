@@ -7,6 +7,14 @@ public static class Program
 {
     public static async Task<int> Main(string[] args)
     {
+        if (args.SequenceEqual([HardwareProbeChildProtocol.Argument], StringComparer.Ordinal))
+        {
+            Console.WriteLine(JsonSerializer.Serialize(
+                NvidiaNativeProbe.Capture(),
+                new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+            return 0;
+        }
+
         if (args.Contains("--self-test", StringComparer.Ordinal))
         {
             WriteSelfTest();
@@ -65,7 +73,10 @@ public static class Program
                 "The artifact service binds only a token-protected IPv4 loopback endpoint.",
                 "The discovery file excludes artifact access tokens.",
                 "SQLite owns the durable worker runtime ledger.",
-                "Only registered worker types can be launched."
+                "Only registered worker types can be launched.",
+                "Processing capability and worker admission are available through the current-user control pipe.",
+                "NVIDIA and CUDA driver calls run in a bounded isolated child mode without developer tools.",
+                "Production worker start checks fixed capability requirements before process creation."
             ]);
     }
 

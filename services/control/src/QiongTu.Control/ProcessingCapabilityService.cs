@@ -95,11 +95,6 @@ internal sealed class ProcessingCapabilityService : IWorkerAdmissionGate
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(definition);
-        if (definition.ResourceRequirements is null)
-        {
-            return new WorkerAdmissionResult(definition.WorkerType, "default", "allowed", []);
-        }
-
         var cpu = _hostProbe.CaptureCpu();
         var memory = _hostProbe.CaptureMemory();
         var storage = _hostProbe.CaptureStorage("worker", definition.WorkingDirectory);
@@ -136,17 +131,14 @@ internal sealed class ProcessingCapabilityService : IWorkerAdmissionGate
         NvidiaCapability nvidia)
     {
         var requirements = definition.ResourceRequirements;
-        var profile = requirements?.Profile ?? "default";
-        if (requirements is null)
-        {
-            return new WorkerAdmissionResult(definition.WorkerType, profile, "allowed", []);
-        }
+        var profile = requirements.Profile;
 
         var reasons = new List<WorkerAdmissionBlockingReason>();
         CheckMinimum(
             reasons,
             "cpu_probe_unknown",
             "logical_processors_insufficient",
+            "logicalProcessors",
             cpu.Status,
             cpu.LogicalProcessorCount,
             requirements.MinimumLogicalProcessors,
@@ -155,6 +147,7 @@ internal sealed class ProcessingCapabilityService : IWorkerAdmissionGate
             reasons,
             "memory_probe_unknown",
             "available_memory_insufficient",
+            "availableMemoryBytes",
             memory.Status,
             memory.AvailableBytes,
             requirements.MinimumAvailableMemoryBytes,
@@ -163,6 +156,7 @@ internal sealed class ProcessingCapabilityService : IWorkerAdmissionGate
             reasons,
             "storage_probe_unknown",
             "available_storage_insufficient",
+            "availableStorageBytes",
             storage.Status,
             storage.AvailableBytes,
             requirements.MinimumAvailableDiskBytes,
@@ -218,7 +212,9 @@ internal sealed class ProcessingCapabilityService : IWorkerAdmissionGate
                 reasons.Add(Reason(
                     "incompatible",
                     "cuda_driver_api_incompatible",
-                    $"CUDA Driver API {FormatCudaVersion(requirements.MinimumCudaDriverApiVersion.Value)} or newer is required; {FormatCudaVersion(actual.Value)} is available."));
+                    $"CUDA Driver API {FormatCudaVersion(requirements.MinimumCudaDriverApiVersion.Value)} or newer is required; {FormatCudaVersion(actual.Value)} is available.",
+                    new Dictionary<string, long> { ["cudaDriverApiVersion"] = requirements.MinimumCudaDriverApiVersion.Value },
+                    new Dictionary<string, long> { ["cudaDriverApiVersion"] = actual.Value }));
             }
         }
 
@@ -259,13 +255,24 @@ internal sealed class ProcessingCapabilityService : IWorkerAdmissionGate
         reasons.Add(Reason(
             "insufficient",
             "gpu_memory_insufficient",
-            $"A GPU with at least {minimumTotal} total and {minimumFree} free bytes is required; the observed maxima are {maximumTotal} total and {maximumFree} free bytes."));
+            $"A GPU with at least {minimumTotal} total and {minimumFree} free bytes is required; the observed maxima are {maximumTotal} total and {maximumFree} free bytes.",
+            new Dictionary<string, long>
+            {
+                ["totalGpuMemoryBytes"] = minimumTotal,
+                ["freeGpuMemoryBytes"] = minimumFree
+            },
+            new Dictionary<string, long>
+            {
+                ["totalGpuMemoryBytes"] = maximumTotal,
+                ["freeGpuMemoryBytes"] = maximumFree
+            }));
     }
 
     private static void CheckMinimum(
         ICollection<WorkerAdmissionBlockingReason> reasons,
         string unknownCode,
         string insufficientCode,
+        string valueKey,
         string status,
         long? actual,
         long minimum,
@@ -285,12 +292,19 @@ internal sealed class ProcessingCapabilityService : IWorkerAdmissionGate
             reasons.Add(Reason(
                 "insufficient",
                 insufficientCode,
-                $"At least {minimum} {resourceName} are required; {actual} are available."));
+                $"At least {minimum} {resourceName} are required; {actual} are available.",
+                new Dictionary<string, long> { [valueKey] = minimum },
+                new Dictionary<string, long> { [valueKey] = actual.Value }));
         }
     }
 
-    private static WorkerAdmissionBlockingReason Reason(string category, string code, string message) =>
-        new(category, code, message);
+    private static WorkerAdmissionBlockingReason Reason(
+        string category,
+        string code,
+        string message,
+        IReadOnlyDictionary<string, long>? requiredValues = null,
+        IReadOnlyDictionary<string, long>? availableValues = null) =>
+        new(category, code, message, requiredValues, availableValues);
 
     private static NvidiaCapability ToContract(NvidiaProbeResult result) => new(
         result.Status,

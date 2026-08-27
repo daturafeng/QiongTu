@@ -64,6 +64,15 @@ export const CONTROL_METHOD_RESULT_LIST = "result.list" as const;
 export const CONTROL_METHOD_RESULT_LINEAGE = "result.lineage" as const;
 export const CONTROL_METHOD_CAPABILITY_GET = "capability.get" as const;
 export const CONTROL_METHOD_WORKER_ADMISSION_CHECK = "worker.admission.check" as const;
+export const CONTROL_METHOD_IMAGE_IMPORT_START = "image-import.start" as const;
+export const CONTROL_METHOD_IMAGE_IMPORT_RESUME = "image-import.resume" as const;
+export const CONTROL_METHOD_IMAGE_IMPORT_CANCEL = "image-import.cancel" as const;
+export const CONTROL_METHOD_IMAGE_IMPORT_GET = "image-import.get" as const;
+export const CONTROL_METHOD_IMAGE_IMPORT_LIST = "image-import.list" as const;
+export const CONTROL_METHOD_IMAGE_IMPORT_ENTRY_LIST = "image-import-entry.list" as const;
+export const CONTROL_METHOD_IMAGE_IMPORT_PREFLIGHT_START = "image-import-preflight.start" as const;
+export const CONTROL_METHOD_IMAGE_IMPORT_PREFLIGHT_GET = "image-import-preflight.get" as const;
+export const CONTROL_METHOD_IMAGE_IMPORT_PREFLIGHT_ITEM_LIST = "image-import-preflight-item.list" as const;
 
 export const PROJECT_DATASET_CONTROL_METHODS = [
   CONTROL_METHOD_PROJECT_CREATE,
@@ -87,6 +96,20 @@ export const PROCESSING_CAPABILITY_CONTROL_METHODS = [
 ] as const;
 
 export type ProcessingCapabilityControlMethod = typeof PROCESSING_CAPABILITY_CONTROL_METHODS[number];
+
+export const IMAGE_IMPORT_CONTROL_METHODS = [
+  CONTROL_METHOD_IMAGE_IMPORT_START,
+  CONTROL_METHOD_IMAGE_IMPORT_RESUME,
+  CONTROL_METHOD_IMAGE_IMPORT_CANCEL,
+  CONTROL_METHOD_IMAGE_IMPORT_GET,
+  CONTROL_METHOD_IMAGE_IMPORT_LIST,
+  CONTROL_METHOD_IMAGE_IMPORT_ENTRY_LIST,
+  CONTROL_METHOD_IMAGE_IMPORT_PREFLIGHT_START,
+  CONTROL_METHOD_IMAGE_IMPORT_PREFLIGHT_GET,
+  CONTROL_METHOD_IMAGE_IMPORT_PREFLIGHT_ITEM_LIST
+] as const;
+
+export type ImageImportControlMethod = typeof IMAGE_IMPORT_CONTROL_METHODS[number];
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | readonly JsonValue[];
@@ -151,6 +174,8 @@ export interface WorkerAdmissionBlockingReason {
   readonly category: WorkerAdmissionBlockingCategory;
   readonly code: string;
   readonly message: string;
+  readonly requiredValues?: Readonly<Record<string, number>>;
+  readonly availableValues?: Readonly<Record<string, number>>;
 }
 
 export interface WorkerAdmissionResult {
@@ -423,6 +448,152 @@ export interface ResultLineage {
   readonly finalQualityReports: readonly QualityReportSummary[];
 }
 
+export interface ImageImportStartParameters {
+  readonly datasetVersionId: string;
+  readonly sourceRootPath: string;
+}
+
+export interface ImageImportResumeParameters {
+  readonly importSessionId: string;
+  readonly sourceRootPath?: string;
+}
+
+export interface ImageImportCancelParameters {
+  readonly importSessionId: string;
+}
+
+export interface ImageImportGetParameters {
+  readonly importSessionId: string;
+}
+
+export interface ImageImportListParameters extends PageRequest {
+  readonly datasetVersionId?: string;
+}
+
+export interface ImageImportEntryListParameters extends PageRequest {
+  readonly importSessionId: string;
+}
+
+export interface ImageImportPrivacy {
+  readonly pathsIncluded: false;
+  readonly hashesIncluded: false;
+  readonly objectKeysIncluded: false;
+  readonly stageReceiptsIncluded: false;
+  readonly quarantineIncluded: false;
+  readonly sourceLocatorsIncluded: false;
+}
+
+export interface ImageImportSession {
+  readonly importSessionId: string;
+  readonly datasetVersionId: string;
+  readonly sourceEligibilityState: string;
+  readonly status: string;
+  readonly totalEntryCount: number;
+  readonly availableEntryCount: number;
+  readonly duplicateEntryCount: number;
+  readonly failedEntryCount: number;
+  readonly cancelledEntryCount: number;
+  readonly lastErrorCode?: string;
+  readonly createdAtUtc: string;
+  readonly updatedAtUtc: string;
+  readonly completedAtUtc?: string;
+  readonly cancelledAtUtc?: string;
+  readonly privacy: ImageImportPrivacy;
+}
+
+export interface ImageImportEntry {
+  readonly importEntryId: string;
+  readonly importSessionId: string;
+  readonly datasetVersionId: string;
+  readonly sortIndex: number;
+  readonly displayName: string;
+  readonly byteLengthSnapshot?: number;
+  readonly sourceLastWriteTimeUtc?: string;
+  readonly status: string;
+  readonly failureCode?: string;
+  readonly canonicalEntryId?: string;
+  readonly createdAtUtc: string;
+  readonly updatedAtUtc: string;
+  readonly terminalAtUtc?: string;
+  readonly privacy: ImageImportPrivacy;
+}
+
+export interface ImageImportPreflightStartParameters {
+  readonly importSessionId: string;
+}
+
+export interface ImageImportPreflightGetParameters {
+  readonly preflightRunId: string;
+}
+
+export interface ImageImportPreflightItemListParameters extends PageRequest {
+  readonly preflightRunId: string;
+}
+
+export interface ImageImportPreflightPrivacy {
+  readonly pathsIncluded: false;
+  readonly locatorsIncluded: false;
+  readonly sourceKeysIncluded: false;
+  readonly hashesIncluded: false;
+  readonly objectKeysIncluded: false;
+  readonly stageReceiptsIncluded: false;
+  readonly quarantineIncluded: false;
+  readonly rawMetadataIncluded: false;
+  readonly serialNumbersIncluded: false;
+  readonly coordinatesIncluded: false;
+  readonly ownerSampleStatisticsIncluded: false;
+}
+
+export interface ImageImportPreflightRun {
+  readonly preflightRunId: string;
+  readonly importSessionId: string;
+  readonly datasetVersionId: string;
+  readonly sourceEligibilityState: "pending" | "dji_supported" | "out_of_scope" | "unconfirmed";
+  readonly status: "queued" | "running" | "completed" | "failed" | "interrupted";
+  readonly decision?: "dji_supported" | "out_of_scope" | "unconfirmed";
+  readonly decisionReasonCode?: string;
+  readonly parserProfile: string;
+  readonly parserVersion: string;
+  readonly policyVersion: string;
+  readonly totalItemCount: number;
+  readonly imageCandidateCount: number;
+  readonly sidecarCandidateCount: number;
+  readonly completedItemCount: number;
+  readonly supportsDjiItemCount: number;
+  readonly outOfScopeItemCount: number;
+  readonly unconfirmedItemCount: number;
+  readonly conflictItemCount: number;
+  readonly failedItemCount: number;
+  readonly blockingImageCount: number;
+  readonly lastErrorCode?: string;
+  readonly createdAtUtc: string;
+  readonly startedAtUtc?: string;
+  readonly updatedAtUtc: string;
+  readonly completedAtUtc?: string;
+  readonly privacy: ImageImportPreflightPrivacy;
+}
+
+export interface ImageImportPreflightItem {
+  readonly preflightItemId: string;
+  readonly preflightRunId: string;
+  readonly importSessionId: string;
+  readonly datasetVersionId: string;
+  readonly sortIndex: number;
+  readonly displayName: string;
+  readonly candidateKind: "image_candidate" | "positioning_aux_candidate";
+  readonly formatHint?: "jpg" | "jpeg" | "mpo" | "tif" | "tiff" | "mrk" | "nav" | "obs" | "rtk";
+  readonly status: "queued" | "running" | "completed" | "failed";
+  readonly containerHint?: "jpeg_hint" | "mpo_hint" | "tiff" | "bigtiff" | "not_image" | "unknown";
+  readonly evidenceState?: "supports_dji" | "out_of_scope" | "unconfirmed" | "conflict" | "read_failed";
+  readonly evidenceKinds: readonly string[];
+  readonly reasonCodes: readonly string[];
+  readonly failureCode?: string;
+  readonly createdAtUtc: string;
+  readonly updatedAtUtc: string;
+  readonly completedAtUtc?: string;
+  readonly privacy: ImageImportPreflightPrivacy;
+}
+
 export type LaunchReadinessStage =
   | "main.started"
   | "app.ready"
@@ -459,6 +630,16 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isBoundedString(value: unknown, maximumLength: number): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= maximumLength;
+}
+
+function hasAsciiControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    if (value.charCodeAt(index) <= 0x1f) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function isOptionalString(value: unknown): value is string | undefined {
@@ -572,6 +753,97 @@ function hasSensitiveContractProperty(value: unknown, seen = new Set<unknown>())
   return false;
 }
 
+function hasImageImportPrivateProperty(value: unknown, seen = new Set<unknown>()): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  if (seen.has(value)) {
+    return false;
+  }
+
+  seen.add(value);
+
+  for (const [key, item] of Object.entries(value)) {
+    const normalizedKey = key.toLowerCase();
+    if (normalizedKey.includes("hash")
+      || normalizedKey.includes("object")
+      || normalizedKey.includes("stage")
+      || normalizedKey.includes("quarantine")
+      || normalizedKey.includes("path")
+      || normalizedKey.includes("locator")
+      || normalizedKey.includes("rootkey")
+      || normalizedKey === "sourceentrykey"
+      || normalizedKey === "sourceidentitykey") {
+      return true;
+    }
+
+    if (isRecord(item) && hasImageImportPrivateProperty(item, seen)) {
+      return true;
+    }
+
+    if (Array.isArray(item) && item.some((arrayItem) => hasImageImportPrivateProperty(arrayItem, seen))) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function hasImageImportPreflightPrivateProperty(value: unknown, seen = new Set<unknown>()): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  if (seen.has(value)) {
+    return false;
+  }
+
+  seen.add(value);
+  for (const [key, item] of Object.entries(value)) {
+    const normalizedKey = key.toLowerCase();
+    if (normalizedKey.includes("path")
+      || normalizedKey.includes("locator")
+      || normalizedKey.includes("rootkey")
+      || normalizedKey.includes("sourcekey")
+      || normalizedKey.includes("sourceentrykey")
+      || normalizedKey.includes("sourceidentitykey")
+      || normalizedKey.includes("hash")
+      || normalizedKey.includes("objectkey")
+      || normalizedKey.includes("stage")
+      || normalizedKey.includes("quarantine")
+      || normalizedKey.includes("rawmetadata")
+      || normalizedKey.includes("metadatadump")
+      || normalizedKey.includes("serial")
+      || normalizedKey.includes("coordinate")
+      || normalizedKey === "gps"
+      || normalizedKey.includes("latitude")
+      || normalizedKey.includes("longitude")
+      || normalizedKey.includes("altitude")
+      || normalizedKey.includes("owner")
+      || normalizedKey.includes("samplestatistics")
+      || normalizedKey.includes("database")
+      || normalizedKey.includes("sqlite")
+      || normalizedKey.includes("commandline")
+      || normalizedKey.includes("environment")
+      || normalizedKey.includes("token")
+      || normalizedKey === "user"
+      || normalizedKey === "machine") {
+      return true;
+    }
+
+    if (isRecord(item) && hasImageImportPreflightPrivateProperty(item, seen)) {
+      return true;
+    }
+
+    if (Array.isArray(item) && item.some(arrayItem => hasImageImportPreflightPrivateProperty(arrayItem, seen))) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function isRelativeObjectKey(value: unknown): value is string {
   if (!isNonEmptyString(value)) {
     return false;
@@ -613,6 +885,45 @@ function isWorkerAdmissionDecision(value: unknown): value is WorkerAdmissionDeci
 
 function isWorkerAdmissionBlockingCategory(value: unknown): value is WorkerAdmissionBlockingCategory {
   return value === "missing" || value === "unknown" || value === "incompatible" || value === "insufficient";
+}
+
+function isImageImportPrivacy(value: unknown): value is ImageImportPrivacy {
+  return isRecord(value)
+    && value.pathsIncluded === false
+    && value.hashesIncluded === false
+    && value.objectKeysIncluded === false
+    && value.stageReceiptsIncluded === false
+    && value.quarantineIncluded === false
+    && value.sourceLocatorsIncluded === false;
+}
+
+function isImageImportPreflightPrivacy(value: unknown): value is ImageImportPreflightPrivacy {
+  return isRecord(value)
+    && value.pathsIncluded === false
+    && value.locatorsIncluded === false
+    && value.sourceKeysIncluded === false
+    && value.hashesIncluded === false
+    && value.objectKeysIncluded === false
+    && value.stageReceiptsIncluded === false
+    && value.quarantineIncluded === false
+    && value.rawMetadataIncluded === false
+    && value.serialNumbersIncluded === false
+    && value.coordinatesIncluded === false
+    && value.ownerSampleStatisticsIncluded === false;
+}
+
+function isOptionalResourceValues(value: unknown): value is Readonly<Record<string, number>> | undefined {
+  if (value === undefined) {
+    return true;
+  }
+
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const entries = Object.entries(value);
+  return entries.length <= 8 && entries.every(([key, item]) =>
+    /^[A-Za-z][A-Za-z0-9]{0,63}$/u.test(key) && isNonNegativeInteger(item));
 }
 
 function isControlConnectionState(value: unknown): value is ControlConnectionState {
@@ -722,7 +1033,9 @@ export function isWorkerAdmissionBlockingReason(value: unknown): value is Worker
     && !hasSensitiveContractProperty(value)
     && isWorkerAdmissionBlockingCategory(value.category)
     && isBoundedString(value.code, 128)
-    && isBoundedString(value.message, 512);
+    && isBoundedString(value.message, 512)
+    && isOptionalResourceValues(value.requiredValues)
+    && isOptionalResourceValues(value.availableValues);
 }
 
 export function isWorkerAdmissionResult(value: unknown): value is WorkerAdmissionResult {
@@ -1021,6 +1334,142 @@ export function isResultLineage(value: unknown): value is ResultLineage {
     && isArrayOf(value.directDependencies, isResultDependency)
     && isArrayOf(value.availableFiles, isResultFile)
     && isArrayOf(value.finalQualityReports, isQualityReportSummary);
+}
+
+export function isImageImportStartParameters(value: unknown): value is ImageImportStartParameters {
+  return isRecord(value)
+    && isNonEmptyString(value.datasetVersionId)
+    && isBoundedString(value.sourceRootPath, 32_767)
+    && !hasAsciiControlCharacter(value.sourceRootPath)
+    && (/^[A-Za-z]:[\\/]/u.test(value.sourceRootPath) || /^\\\\[^\\]/u.test(value.sourceRootPath));
+}
+
+export function isImageImportResumeParameters(value: unknown): value is ImageImportResumeParameters {
+  return isRecord(value)
+    && isBoundedString(value.importSessionId, 128)
+    && (value.sourceRootPath === undefined || (
+      isBoundedString(value.sourceRootPath, 32_767)
+      && !hasAsciiControlCharacter(value.sourceRootPath)
+      && (/^[A-Za-z]:[\\/]/u.test(value.sourceRootPath) || /^\\\\[^\\]/u.test(value.sourceRootPath))));
+}
+
+export function isImageImportSession(value: unknown): value is ImageImportSession {
+  return isRecord(value)
+    && !hasSensitiveContractProperty(value)
+    && !hasImageImportPrivateProperty({
+      ...value,
+      privacy: undefined
+    })
+    && isNonEmptyString(value.importSessionId)
+    && isNonEmptyString(value.datasetVersionId)
+    && isNonEmptyString(value.sourceEligibilityState)
+    && isNonEmptyString(value.status)
+    && isNonNegativeInteger(value.totalEntryCount)
+    && isNonNegativeInteger(value.availableEntryCount)
+    && isNonNegativeInteger(value.duplicateEntryCount)
+    && isNonNegativeInteger(value.failedEntryCount)
+    && isNonNegativeInteger(value.cancelledEntryCount)
+    && isOptionalBoundedString(value.lastErrorCode, 128)
+    && isIsoDateTime(value.createdAtUtc)
+    && isIsoDateTime(value.updatedAtUtc)
+    && (value.completedAtUtc === undefined || isIsoDateTime(value.completedAtUtc))
+    && (value.cancelledAtUtc === undefined || isIsoDateTime(value.cancelledAtUtc))
+    && isImageImportPrivacy(value.privacy);
+}
+
+export function isImageImportEntry(value: unknown): value is ImageImportEntry {
+  return isRecord(value)
+    && !hasSensitiveContractProperty(value)
+    && !hasImageImportPrivateProperty({
+      ...value,
+      privacy: undefined
+    })
+    && isNonEmptyString(value.importEntryId)
+    && isNonEmptyString(value.importSessionId)
+    && isNonEmptyString(value.datasetVersionId)
+    && isNonNegativeInteger(value.sortIndex)
+    && isBoundedString(value.displayName, 255)
+    && !value.displayName.includes("/")
+    && !value.displayName.includes("\\")
+    && !value.displayName.includes(":")
+    && (value.byteLengthSnapshot === undefined || isNonNegativeInteger(value.byteLengthSnapshot))
+    && (value.sourceLastWriteTimeUtc === undefined || isIsoDateTime(value.sourceLastWriteTimeUtc))
+    && isNonEmptyString(value.status)
+    && isOptionalBoundedString(value.failureCode, 128)
+    && isOptionalString(value.canonicalEntryId)
+    && isIsoDateTime(value.createdAtUtc)
+    && isIsoDateTime(value.updatedAtUtc)
+    && (value.terminalAtUtc === undefined || isIsoDateTime(value.terminalAtUtc))
+    && isImageImportPrivacy(value.privacy);
+}
+
+export function isImageImportPreflightStartParameters(
+  value: unknown
+): value is ImageImportPreflightStartParameters {
+  return isRecord(value)
+    && !hasImageImportPreflightPrivateProperty(value)
+    && isBoundedString(value.importSessionId, 128);
+}
+
+export function isImageImportPreflightRun(value: unknown): value is ImageImportPreflightRun {
+  return isRecord(value)
+    && !hasSensitiveContractProperty(value)
+    && !hasImageImportPreflightPrivateProperty({ ...value, privacy: undefined })
+    && isBoundedString(value.preflightRunId, 128)
+    && isBoundedString(value.importSessionId, 128)
+    && isBoundedString(value.datasetVersionId, 128)
+    && ["pending", "dji_supported", "out_of_scope", "unconfirmed"].includes(value.sourceEligibilityState as string)
+    && ["queued", "running", "completed", "failed", "interrupted"].includes(value.status as string)
+    && (value.decision === undefined || ["dji_supported", "out_of_scope", "unconfirmed"].includes(value.decision as string))
+    && isOptionalBoundedString(value.decisionReasonCode, 128)
+    && isBoundedString(value.parserProfile, 128)
+    && isBoundedString(value.parserVersion, 128)
+    && isBoundedString(value.policyVersion, 128)
+    && isNonNegativeInteger(value.totalItemCount)
+    && isNonNegativeInteger(value.imageCandidateCount)
+    && isNonNegativeInteger(value.sidecarCandidateCount)
+    && isNonNegativeInteger(value.completedItemCount)
+    && isNonNegativeInteger(value.supportsDjiItemCount)
+    && isNonNegativeInteger(value.outOfScopeItemCount)
+    && isNonNegativeInteger(value.unconfirmedItemCount)
+    && isNonNegativeInteger(value.conflictItemCount)
+    && isNonNegativeInteger(value.failedItemCount)
+    && isNonNegativeInteger(value.blockingImageCount)
+    && isOptionalBoundedString(value.lastErrorCode, 128)
+    && isIsoDateTime(value.createdAtUtc)
+    && (value.startedAtUtc === undefined || isIsoDateTime(value.startedAtUtc))
+    && isIsoDateTime(value.updatedAtUtc)
+    && (value.completedAtUtc === undefined || isIsoDateTime(value.completedAtUtc))
+    && isImageImportPreflightPrivacy(value.privacy);
+}
+
+export function isImageImportPreflightItem(value: unknown): value is ImageImportPreflightItem {
+  return isRecord(value)
+    && !hasSensitiveContractProperty(value)
+    && !hasImageImportPreflightPrivateProperty({ ...value, privacy: undefined })
+    && isBoundedString(value.preflightItemId, 128)
+    && isBoundedString(value.preflightRunId, 128)
+    && isBoundedString(value.importSessionId, 128)
+    && isBoundedString(value.datasetVersionId, 128)
+    && isNonNegativeInteger(value.sortIndex)
+    && isBoundedString(value.displayName, 255)
+    && !value.displayName.includes("/")
+    && !value.displayName.includes("\\")
+    && !value.displayName.includes(":")
+    && ["image_candidate", "positioning_aux_candidate"].includes(value.candidateKind as string)
+    && (value.formatHint === undefined || ["jpg", "jpeg", "mpo", "tif", "tiff", "mrk", "nav", "obs", "rtk"].includes(value.formatHint as string))
+    && ["queued", "running", "completed", "failed"].includes(value.status as string)
+    && (value.containerHint === undefined || ["jpeg_hint", "mpo_hint", "tiff", "bigtiff", "not_image", "unknown"].includes(value.containerHint as string))
+    && (value.evidenceState === undefined || ["supports_dji", "out_of_scope", "unconfirmed", "conflict", "read_failed"].includes(value.evidenceState as string))
+    && isArrayOf(value.evidenceKinds, item => isBoundedString(item, 128))
+    && value.evidenceKinds.length <= 16
+    && isArrayOf(value.reasonCodes, item => isBoundedString(item, 128))
+    && value.reasonCodes.length <= 16
+    && isOptionalBoundedString(value.failureCode, 128)
+    && isIsoDateTime(value.createdAtUtc)
+    && isIsoDateTime(value.updatedAtUtc)
+    && (value.completedAtUtc === undefined || isIsoDateTime(value.completedAtUtc))
+    && isImageImportPreflightPrivacy(value.privacy);
 }
 
 export function isControlConnectionStatus(value: unknown): value is ControlConnectionStatus {

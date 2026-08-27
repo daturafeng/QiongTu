@@ -6,9 +6,8 @@
     <PackageReference Include="MSTest" Version="4.0.2" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\src\QiongTu.Control\QiongTu.Control.csproj" />
+    <ProjectReference Include="..\..\src\QiongTu.ImageProbe\QiongTu.ImageProbe.csproj" />
     <ProjectReference Include="..\..\..\..\packages\contracts\dotnet\QiongTu.Contracts\QiongTu.Contracts.csproj" />
-    <ProjectReference Include="..\..\..\image-probe\src\QiongTu.ImageProbe\QiongTu.ImageProbe.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />

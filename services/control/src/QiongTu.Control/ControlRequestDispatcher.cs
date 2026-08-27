@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Data.Sqlite;
@@ -18,6 +20,9 @@ public sealed class ControlRequestDispatcher
     private readonly BusinessCatalog _catalog;
     private readonly ProcessingCapabilityService _capabilities;
     private readonly Action _requestStop;
+    private readonly ImageImportCoordinator? _imageImports;
+    private readonly ImageImportCatalog? _imageImportCatalog;
+    private readonly ControlDataPaths? _controlDataPaths;
 
     internal ControlRequestDispatcher(
         string pipeName,
@@ -26,7 +31,10 @@ public sealed class ControlRequestDispatcher
         WorkerSupervisor workers,
         BusinessCatalog catalog,
         ProcessingCapabilityService capabilities,
-        Action requestStop)
+        Action requestStop,
+        ImageImportCoordinator? imageImports = null,
+        ImageImportCatalog? imageImportCatalog = null,
+        ControlDataPaths? controlDataPaths = null)
     {
         _pipeName = pipeName;
         _startedAtUtc = startedAtUtc;
@@ -35,6 +43,9 @@ public sealed class ControlRequestDispatcher
         _catalog = catalog;
         _capabilities = capabilities;
         _requestStop = requestStop;
+        _imageImports = imageImports;
+        _imageImportCatalog = imageImportCatalog;
+        _controlDataPaths = controlDataPaths;
     }
 
     public async Task<ControlResponse> DispatchAsync(ControlRequest request, CancellationToken cancellationToken)
@@ -86,6 +97,15 @@ public sealed class ControlRequestDispatcher
                     ReadParameters<ResultLineageParameters>(request)),
                 ControlMethods.CapabilityGet => await GetCapabilitiesAsync(request, cancellationToken),
                 ControlMethods.WorkerAdmissionCheck => await CheckWorkerAdmissionAsync(request, cancellationToken),
+                ControlMethods.ImageImportStart => await StartImageImportAsync(request, cancellationToken),
+                ControlMethods.ImageImportResume => await ResumeImageImportAsync(request, cancellationToken),
+                ControlMethods.ImageImportCancel => CancelImageImport(request),
+                ControlMethods.ImageImportGet => RequireImageImportCatalog().Get(
+                    ReadParameters<ImageImportGetParameters>(request)),
+                ControlMethods.ImageImportList => RequireImageImportCatalog().List(
+                    ReadOptionalParameters(request, new ImageImportListParameters(null, null, null))),
+                ControlMethods.ImageImportEntryList => RequireImageImportCatalog().ListEntries(
+                    ReadParameters<ImageImportEntryListParameters>(request)),
                 _ => throw new ControlProtocolException("method_not_found", "The requested control method is not available.")
             };
             return new ControlResponse(
@@ -97,9 +117,21 @@ public sealed class ControlRequestDispatcher
         }
         catch (ControlProtocolException exception)
         {
-            return Failure(request, exception.Code, exception.Message);
+            return Failure(request, exception.Code, exception.Message, exception.Details);
         }
         catch (BusinessCatalogException exception)
+        {
+            return Failure(request, exception.Code, exception.Message);
+        }
+        catch (ImageImportSourceDiscoveryException exception)
+        {
+            return Failure(request, exception.Code, exception.Message);
+        }
+        catch (ImageImportSourceSecurityException exception)
+        {
+            return Failure(request, exception.Code, exception.Message);
+        }
+        catch (ObjectStoreException exception)
         {
             return Failure(request, exception.Code, exception.Message);
         }
@@ -170,9 +202,61 @@ public sealed class ControlRequestDispatcher
         return await _workers.CancelAsync(parameters.WorkerId, cancellationToken);
     }
 
+    private async Task<ImageImportSession> StartImageImportAsync(
+        ControlRequest request,
+        CancellationToken cancellationToken)
+    {
+        var paths = _controlDataPaths ?? throw new ControlProtocolException(
+            "image_import_unavailable",
+            "Image import is not configured for this control process.");
+        var parameters = ReadParameters<ImageImportStartParameters>(request);
+        return await RequireImageImportCoordinator().StartAsync(
+            request.RequestId,
+            CreateImportSessionId(request.RequestId),
+            parameters.DatasetVersionId,
+            parameters.SourceRootPath,
+            paths,
+            cancellationToken);
+    }
+
+    private async Task<ImageImportSession> ResumeImageImportAsync(
+        ControlRequest request,
+        CancellationToken cancellationToken)
+    {
+        var parameters = ReadParameters<ImageImportResumeParameters>(request);
+        return await RequireImageImportCoordinator().ResumeAsync(
+            request.RequestId,
+            parameters.ImportSessionId,
+            parameters.SourceRootPath,
+            _controlDataPaths,
+            cancellationToken);
+    }
+
+    private ImageImportSession CancelImageImport(ControlRequest request)
+    {
+        var parameters = ReadParameters<ImageImportCancelParameters>(request);
+        return RequireImageImportCoordinator().Cancel(request.RequestId, parameters.ImportSessionId);
+    }
+
+    private ImageImportCoordinator RequireImageImportCoordinator() =>
+        _imageImports ?? throw new ControlProtocolException(
+            "image_import_unavailable",
+            "Image import is not configured for this control process.");
+
+    private ImageImportCatalog RequireImageImportCatalog() =>
+        _imageImportCatalog ?? throw new ControlProtocolException(
+            "image_import_unavailable",
+            "Image import is not configured for this control process.");
+
+    private static string CreateImportSessionId(string requestId)
+    {
+        var digest = SHA256.HashData(Encoding.UTF8.GetBytes(requestId));
+        return "image-import-session-" + Convert.ToHexString(digest).ToLowerInvariant()[..32];
+    }
+
     private object StopIfIdle()
     {
-        if (_workers.ActiveCount != 0)
+        if (_workers.ActiveCount != 0 || (_imageImports is not null && !_imageImports.IsIdle))
         {
             throw new ControlProtocolException("control_busy", "The control process still owns active workers.");
         }
@@ -227,10 +311,14 @@ public sealed class ControlRequestDispatcher
         throw new ControlProtocolException("invalid_parameters", "This request does not accept parameters.");
     }
 
-    private static ControlResponse Failure(ControlRequest request, string code, string message) => new(
+    private static ControlResponse Failure(
+        ControlRequest request,
+        string code,
+        string message,
+        object? details = null) => new(
         ContractVersions.ControlApiV1,
         request.RequestId,
         false,
         null,
-        new ControlError(code, message));
+        new ControlError(code, message, details));
 }

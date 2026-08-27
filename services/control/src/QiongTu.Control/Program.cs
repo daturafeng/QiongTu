@@ -116,7 +116,16 @@ public static class Program
                 "lifecycle-probe",
                 Path.Combine(Environment.SystemDirectory, "ping.exe"),
                 ["-n", "120", "127.0.0.1"],
-                paths.RuntimeDirectory));
+                paths.RuntimeDirectory,
+                new WorkerResourceRequirements(
+                    "lifecycle-probe",
+                    MinimumLogicalProcessors: 1,
+                    MinimumAvailableMemoryBytes: 1,
+                    MinimumAvailableDiskBytes: 1,
+                    RequiresNvidia: false,
+                    MinimumCudaDriverApiVersion: null,
+                    MinimumTotalGpuMemoryBytes: null,
+                    MinimumFreeGpuMemoryBytes: null)));
         }
 
         return registry;

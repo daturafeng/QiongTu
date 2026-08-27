@@ -305,7 +305,9 @@ public sealed class BusinessCatalogControlIntegrationTests
             runtimeStore.Initialize();
             var database = new BusinessDatabase(paths.BusinessDatabase);
             database.Initialize();
-            var workers = new WorkerSupervisor(new WorkerRegistry(), runtimeStore, paths.LogDirectory);
+            var registry = new WorkerRegistry();
+            var capabilities = new ProcessingCapabilityService(registry, paths);
+            var workers = new WorkerSupervisor(registry, runtimeStore, paths.LogDirectory, capabilities);
             var roots = new ArtifactRootRegistry();
             roots.RegisterTrustedRoot("objects", paths.ObjectDirectory);
             var artifactServer = new ArtifactServer(roots);
@@ -314,7 +316,6 @@ public sealed class BusinessCatalogControlIntegrationTests
             var catalog = maximumCatalogResponseBytes is null
                 ? new BusinessCatalog(database)
                 : new BusinessCatalog(database, maximumCatalogResponseBytes.Value);
-            var capabilities = new ProcessingCapabilityService(new WorkerRegistry(), paths);
             var dispatcher = new ControlRequestDispatcher(
                 pipeName,
                 DateTimeOffset.UtcNow,

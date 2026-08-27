@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0": {
+      "MetadataExtractor": {
+        "type": "Direct",
+        "requested": "[2.9.3, 2.9.3]",
+        "resolved": "2.9.3",
+        "contentHash": "7dBcqlPC2Zc/bsZtXnv8nCWe5h5WsLHszzHtxnpcsVy4MwlD3KQ3wVNoiYBm0a3rzt5hRwAosPvLPhlXrV5lyg==",
+        "dependencies": {
+          "XmpCore": "6.1.10.1"
+        }
+      },
+      "Microsoft.NET.ILLink.Tasks": {
+        "type": "Direct",
+        "requested": "[10.0.11, )",
+        "resolved": "10.0.11",
+        "contentHash": "IBf7lbovvjGWVWXZX5cJ/cO0WXbId0Zq4BuSeT94mGZuOAP66oMeH9PTBZ9Jpp3Jb6jtK0qm/NyUbPRo1gC/wQ=="
+      },
+      "XmpCore": {
+        "type": "Transitive",
+        "resolved": "6.1.10.1",
+        "contentHash": "/Tp2/e39e7z8hLtS4TXt0FNNZHbf5yNFfHS0/59soXlgOzZlyRZivvzWpvujyaWkTWWgecp/1nHxkuc5vntn7A=="
+      },
+      "qiongtu.contracts": {
+        "type": "Project"
+      }
+    },
+    "net10.0/win-x64": {}
+  }
+}

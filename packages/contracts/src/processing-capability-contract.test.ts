@@ -31,7 +31,9 @@ const deniedAdmission: WorkerAdmissionResult = {
     {
       category: "insufficient",
       code: "vram_below_minimum",
-      message: "Available GPU memory is below the configured worker threshold."
+      message: "Available GPU memory is below the configured worker threshold.",
+      requiredValues: { totalGpuMemoryBytes: 12_000, freeGpuMemoryBytes: 8_000 },
+      availableValues: { totalGpuMemoryBytes: 8_000, freeGpuMemoryBytes: 4_000 }
     }
   ]
 };
@@ -131,6 +133,16 @@ describe("processing capability contract", () => {
         }
       ]
     })).toBe(true);
+    expect(isWorkerAdmissionResult({
+      ...deniedAdmission,
+      blockingReasons: [{
+        category: "insufficient",
+        code: "memory_below_minimum",
+        message: "Available memory is below the fixed threshold.",
+        requiredValues: { availableMemoryBytes: 8_000 },
+        availableValues: { availableMemoryBytes: 4_000 }
+      }]
+    })).toBe(true);
   });
 
   it("rejects paths, tokens, usernames, machine ids, environment, command lines, GPU UUIDs, and PCI ids", () => {
@@ -188,7 +200,7 @@ describe("processing capability contract", () => {
     expect(isProcessingCapabilityReport({
       ...report,
       storage: Array.from({ length: 9 }, (_, index) => ({
-        role: "volume-" + index,
+        role: ["volume", index.toString()].join("-"),
         totalBytes: 1,
         availableBytes: 1,
         driveType: "fixed",
@@ -217,6 +229,15 @@ describe("processing capability contract", () => {
     expect(isWorkerAdmissionResult({
       ...allowedAdmission,
       profile: ""
+    })).toBe(false);
+    expect(isWorkerAdmissionResult({
+      ...deniedAdmission,
+      blockingReasons: [{
+        category: "insufficient",
+        code: "bad_values",
+        message: "Invalid values must be rejected.",
+        requiredValues: { availableMemoryBytes: -1 }
+      }]
     })).toBe(false);
     expect(isProcessingCapabilityReport({
       ...report,

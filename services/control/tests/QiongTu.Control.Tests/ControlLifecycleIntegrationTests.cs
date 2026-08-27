@@ -26,10 +26,19 @@ public sealed class ControlLifecycleIntegrationTests
             "lifecycle-probe",
             Path.Combine(Environment.SystemDirectory, "ping.exe"),
             ["-n", "120", "127.0.0.1"],
-            paths.RuntimeDirectory));
+            paths.RuntimeDirectory,
+            new WorkerResourceRequirements(
+                "lifecycle-probe",
+                MinimumLogicalProcessors: 1,
+                MinimumAvailableMemoryBytes: 1,
+                MinimumAvailableDiskBytes: 1,
+                RequiresNvidia: false,
+                MinimumCudaDriverApiVersion: null,
+                MinimumTotalGpuMemoryBytes: null,
+                MinimumFreeGpuMemoryBytes: null)));
         var capabilities = new ProcessingCapabilityService(registry, paths);
 
-        using var workers = new WorkerSupervisor(registry, store, paths.LogDirectory);
+        using var workers = new WorkerSupervisor(registry, store, paths.LogDirectory, capabilities);
         var roots = new ArtifactRootRegistry();
         roots.RegisterTrustedRoot("objects", paths.ObjectDirectory);
         await using var artifactServer = new ArtifactServer(roots);

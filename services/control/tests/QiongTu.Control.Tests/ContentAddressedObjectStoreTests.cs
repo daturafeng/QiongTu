@@ -191,6 +191,29 @@ public sealed class ContentAddressedObjectStoreTests
         Assert.AreEqual("viewer-object", await afterPublish.Content.ReadAsStringAsync());
     }
 
+    [TestMethod]
+    public async Task PublishedObjectCanBeVerifiedAfterBusinessCommitCrashWithoutReturningAPath()
+    {
+        using var scope = new ObjectStoreScope();
+        var bytes = Encoding.UTF8.GetBytes("published-before-business-commit");
+        var store = new ContentAddressedObjectStore(scope.StoreRoot);
+        var published = await store.PublishAsync(await store.StageAsync(new MemoryStream(bytes)));
+
+        var recovered = await store.FindPublishedAsync(published.Sha256, published.ByteLength);
+
+        Assert.IsNotNull(recovered);
+        Assert.AreEqual(published.ObjectKey, recovered.ObjectKey);
+        Assert.IsTrue(recovered.Deduplicated);
+        Assert.IsFalse(Path.IsPathRooted(recovered.ObjectKey));
+        Assert.IsNull(await store.FindPublishedAsync(new string('f', 64), 1));
+
+        await File.AppendAllTextAsync(ResolvePublished(store, published.ObjectKey), "tampered");
+        var exception = await Assert.ThrowsAsync<ObjectStoreException>(() =>
+            store.FindPublishedAsync(published.Sha256, published.ByteLength));
+        Assert.AreEqual("object_formal_integrity_failed", exception.Code);
+        Assert.IsFalse(exception.Message.Contains(scope.Root, StringComparison.OrdinalIgnoreCase));
+    }
+
     private static string ResolvePublished(ContentAddressedObjectStore store, string objectKey) =>
         Path.Combine(store.PublishedDirectory, objectKey.Replace('/', Path.DirectorySeparatorChar));
 

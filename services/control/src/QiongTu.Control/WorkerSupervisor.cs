@@ -17,8 +17,9 @@ public sealed class WorkerSupervisor : IDisposable
     private readonly WorkerRegistry _registry;
     private readonly WorkerRuntimeStore _store;
     private readonly string _logDirectory;
-    private readonly IWorkerAdmissionGate? _admissionGate;
+    private readonly IWorkerAdmissionGate _admissionGate;
     private readonly ConcurrentDictionary<string, Process> _processes = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, Task> _monitorTasks = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, byte> _cancelRequested = new(StringComparer.Ordinal);
     private bool _disposed;
 
@@ -26,12 +27,12 @@ public sealed class WorkerSupervisor : IDisposable
         WorkerRegistry registry,
         WorkerRuntimeStore store,
         string logDirectory,
-        IWorkerAdmissionGate? admissionGate = null)
+        IWorkerAdmissionGate admissionGate)
     {
         _registry = registry;
         _store = store;
         _logDirectory = logDirectory;
-        _admissionGate = admissionGate;
+        _admissionGate = admissionGate ?? throw new ArgumentNullException(nameof(admissionGate));
         Directory.CreateDirectory(logDirectory);
     }
 
@@ -62,17 +63,6 @@ public sealed class WorkerSupervisor : IDisposable
         }
     }
 
-    public WorkerSnapshot Start(string workerType)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        if (!_registry.TryGet(workerType, out var definition))
-        {
-            throw new ControlProtocolException("worker_not_registered", "The requested worker type is not registered.");
-        }
-
-        return StartCore(workerType, definition);
-    }
-
     public async Task<WorkerSnapshot> StartAsync(
         string workerType,
         CancellationToken cancellationToken)
@@ -83,22 +73,21 @@ public sealed class WorkerSupervisor : IDisposable
             throw new ControlProtocolException("worker_not_registered", "The requested worker type is not registered.");
         }
 
-        if (_admissionGate is not null)
+        var admission = await _admissionGate.CheckAsync(definition, cancellationToken);
+        if (admission.Decision == "denied")
         {
-            var admission = await _admissionGate.CheckAsync(definition, cancellationToken);
-            if (admission.Decision == "denied")
-            {
-                throw new ControlProtocolException(
-                    "worker_admission_denied",
-                    "The registered worker does not satisfy its fixed capability requirements.");
-            }
+            throw new ControlProtocolException(
+                "worker_admission_denied",
+                "The registered worker does not satisfy its fixed capability requirements.",
+                admission);
+        }
 
-            if (admission.Decision == "unknown")
-            {
-                throw new ControlProtocolException(
-                    "worker_admission_unknown",
-                    "The registered worker capability requirements could not be verified safely.");
-            }
+        if (admission.Decision == "unknown")
+        {
+            throw new ControlProtocolException(
+                "worker_admission_unknown",
+                "The registered worker capability requirements could not be verified safely.",
+                admission);
         }
 
         return StartCore(workerType, definition);
@@ -241,6 +230,8 @@ public sealed class WorkerSupervisor : IDisposable
                 await process.WaitForExitAsync();
             }
 
+            await WaitForMonitorAsync(workerId);
+
             var cancelled = snapshot with
             {
                 State = CancelledState,
@@ -273,11 +264,12 @@ public sealed class WorkerSupervisor : IDisposable
         }
 
         _processes.Clear();
+        _monitorTasks.Clear();
     }
 
     private void Monitor(WorkerSnapshot initial, Process process, bool captureOutput)
     {
-        _ = Task.Run(async () =>
+        var monitorTask = Task.Run(async () =>
         {
             Task? standardOutput = null;
             Task? standardError = null;
@@ -320,6 +312,27 @@ public sealed class WorkerSupervisor : IDisposable
                 }
             }
         });
+        _monitorTasks[initial.WorkerId] = monitorTask;
+        _ = monitorTask.ContinueWith(
+            completedTask =>
+            {
+                if (_monitorTasks.TryGetValue(initial.WorkerId, out var currentTask)
+                    && ReferenceEquals(currentTask, completedTask))
+                {
+                    _monitorTasks.TryRemove(initial.WorkerId, out _);
+                }
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private async Task WaitForMonitorAsync(string workerId)
+    {
+        if (_monitorTasks.TryGetValue(workerId, out var monitorTask))
+        {
+            await monitorTask;
+        }
     }
 
     private static bool TryAttachToExpectedProcess(
@@ -438,7 +451,9 @@ public sealed class WorkerSupervisor : IDisposable
     }
 }
 
-public sealed class ControlProtocolException(string code, string message) : Exception(message)
+public sealed class ControlProtocolException(string code, string message, object? details = null) : Exception(message)
 {
     public string Code { get; } = code;
+
+    public object? Details { get; } = details;
 }

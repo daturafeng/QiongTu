@@ -247,7 +247,7 @@ public sealed class BusinessCatalogTests
     }
 
     [TestMethod]
-    public void VersionTwoDatabaseUpgradesToVersionThreeWithCatalogMutationTableAndCrsIdentityIndex()
+    public void VersionTwoDatabaseUpgradesToCurrentCatalogAndImportSchema()
     {
         using var scope = new DatabaseOnlyScope();
         CreateDatabaseAtVersion(scope.DatabasePath, 2);
@@ -255,9 +255,10 @@ public sealed class BusinessCatalogTests
         new BusinessDatabase(scope.DatabasePath).Initialize();
 
         using var connection = OpenRaw(scope.DatabasePath);
-        Assert.AreEqual(3L, Scalar<long>(connection, "PRAGMA user_version;"));
+        Assert.AreEqual((long)BusinessDatabase.CurrentSchemaVersion, Scalar<long>(connection, "PRAGMA user_version;"));
         Assert.AreEqual(1L, Scalar<long>(connection, "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='catalog_mutations';"));
         Assert.AreEqual(1L, Scalar<long>(connection, "SELECT count(*) FROM sqlite_schema WHERE type='index' AND name='ux_crs_definitions_identity_expr';"));
+        Assert.AreEqual(1L, Scalar<long>(connection, "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='image_import_sessions';"));
         Execute(connection,
             """
             INSERT INTO crs_definitions(crs_id,authority,code,name,horizontal_unit,vertical_reference,axis_order,created_at_utc)

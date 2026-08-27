@@ -5,7 +5,7 @@ public sealed record WorkerDefinition(
     string FileName,
     IReadOnlyList<string> Arguments,
     string WorkingDirectory,
-    WorkerResourceRequirements? ResourceRequirements = null);
+    WorkerResourceRequirements ResourceRequirements);
 
 public sealed record WorkerResourceRequirements(
     string Profile,
@@ -53,12 +53,9 @@ public sealed class WorkerRegistry
     public IReadOnlyList<WorkerDefinition> List() =>
         _definitions.Values.OrderBy(item => item.WorkerType, StringComparer.Ordinal).ToArray();
 
-    private static void ValidateRequirements(WorkerResourceRequirements? requirements)
+    private static void ValidateRequirements(WorkerResourceRequirements requirements)
     {
-        if (requirements is null)
-        {
-            return;
-        }
+        ArgumentNullException.ThrowIfNull(requirements);
 
         if (string.IsNullOrWhiteSpace(requirements.Profile) || requirements.Profile.Length > 64 ||
             requirements.Profile.Any(character => !(char.IsAsciiLetterOrDigit(character) || character is '-' or '_' or '.')) ||

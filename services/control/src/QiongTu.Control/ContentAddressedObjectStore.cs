@@ -127,7 +127,21 @@ public sealed class ContentAddressedObjectStore
             {
                 while (true)
                 {
-                    var read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken);
+                    int read;
+                    try
+                    {
+                        read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken);
+                    }
+                    catch (IOException exception)
+                    {
+                        TryDeleteStageDirectory(stageDirectory);
+                        throw new ObjectStoreException(
+                            "object_source_read_failed",
+                            "The source stream became unavailable while the object was being staged.",
+                            stageId,
+                            innerException: exception);
+                    }
+
                     if (read == 0)
                     {
                         break;
@@ -169,6 +183,21 @@ public sealed class ContentAddressedObjectStore
         {
             throw;
         }
+        catch (IOException exception) when (IsDiskFull(exception))
+        {
+            string? quarantineId = null;
+            if (Directory.Exists(stageDirectory))
+            {
+                quarantineId = await TryQuarantineStageDirectoryAsync(stageId, "storage_full");
+            }
+
+            throw new ObjectStoreException(
+                "object_store_disk_full",
+                "The controlled object store has insufficient free space for staging.",
+                stageId,
+                quarantineId,
+                exception);
+        }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or CryptographicException)
         {
             string? quarantineId = null;
@@ -189,6 +218,9 @@ public sealed class ContentAddressedObjectStore
             ArrayPool<byte>.Shared.Return(buffer);
         }
     }
+
+    private static bool IsDiskFull(IOException exception) =>
+        (exception.HResult & 0xffff) is 39 or 112;
 
     public async Task<PublishedObject> PublishAsync(
         ObjectStageReceipt stage,
@@ -280,6 +312,37 @@ public sealed class ContentAddressedObjectStore
         }
 
         return new StagingRecoveryResult(recoverable, quarantined);
+    }
+
+    public async Task<PublishedObject?> FindPublishedAsync(
+        string sha256,
+        long byteLength,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedSha256 = NormalizeSha256(sha256);
+        if (byteLength < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(byteLength));
+        }
+
+        var objectKey = CreateObjectKey(normalizedSha256);
+        var targetPath = ResolvePublishedPath(objectKey);
+        if (!File.Exists(targetPath))
+        {
+            return null;
+        }
+
+        EnsurePathHasNoReparsePoint(PublishedDirectory, targetPath);
+        var actual = await HashFileAsync(targetPath, cancellationToken);
+        if (actual.ByteLength != byteLength ||
+            !string.Equals(actual.Sha256, normalizedSha256, StringComparison.Ordinal))
+        {
+            throw new ObjectStoreException(
+                "object_formal_integrity_failed",
+                "The formal content object no longer matches its expected SHA-256 and byte length.");
+        }
+
+        return new PublishedObject(normalizedSha256, byteLength, objectKey, Deduplicated: true);
     }
 
     public async Task<QuarantinedObject> AbandonAsync(

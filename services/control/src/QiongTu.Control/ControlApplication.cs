@@ -37,6 +37,17 @@ public sealed class ControlApplication
         workers.ReconcilePersistedWorkers();
 
         var objectStore = new ContentAddressedObjectStore(_paths.ObjectDirectory);
+        var imageImportCatalog = new ImageImportCatalog(businessDatabase);
+        var imageImportSourceSecurity = new ImageImportSourceSecurity(
+            Path.Combine(_paths.StateDirectory, "image-import-locators"));
+        var imageImportSourceDiscovery = new ImageImportSourceDiscovery(imageImportSourceSecurity);
+        await using var imageImportCoordinator = new ImageImportCoordinator(
+            imageImportCatalog,
+            imageImportSourceSecurity,
+            imageImportSourceDiscovery,
+            objectStore);
+        await imageImportCoordinator.RecoverAsync(cancellationToken);
+
         var roots = new ArtifactRootRegistry();
         roots.RegisterTrustedRoot("objects", objectStore.PublishedDirectory);
         await using var artifactServer = new ArtifactServer(roots);
@@ -53,7 +64,10 @@ public sealed class ControlApplication
             workers,
             businessCatalog,
             capabilityService,
-            internalShutdown.Cancel);
+            internalShutdown.Cancel,
+            imageImportCoordinator,
+            imageImportCatalog,
+            _paths);
         await using var pipeServer = new NamedPipeControlServer(pipeName, dispatcher);
         pipeServer.Start();
 

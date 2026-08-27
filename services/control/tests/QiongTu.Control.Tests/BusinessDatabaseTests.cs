@@ -29,7 +29,7 @@ public sealed class BusinessDatabaseTests
             "projects", "datasets", "dataset_versions", "file_objects", "images", "image_frames",
             "image_metadata_fields", "positioning_aux_files", "positioning_aux_usage", "processing_jobs", "job_executions",
             "job_events", "result_series", "results", "result_files", "result_dependencies",
-            "quality_reports", "quality_findings"
+            "quality_reports", "quality_findings", "image_import_sessions", "image_import_entries"
         };
         foreach (var table in requiredTables)
         {
@@ -110,7 +110,17 @@ public sealed class BusinessDatabaseTests
             3,
             "0003_broken.sql",
             "CREATE TABLE rolled_back(id INTEGER PRIMARY KEY); THIS IS NOT SQL;");
-        var database = new BusinessDatabase(scope.DatabasePath, [baselineMigration, secondMigration, brokenMigration]);
+        var fourthMigration = BusinessMigration.Create(
+            4,
+            "0004_never_reached.sql",
+            "CREATE TABLE never_reached(id INTEGER PRIMARY KEY);");
+        var fifthMigration = BusinessMigration.Create(
+            5,
+            "0005_never_reached.sql",
+            "CREATE TABLE also_never_reached(id INTEGER PRIMARY KEY);");
+        var database = new BusinessDatabase(
+            scope.DatabasePath,
+            [baselineMigration, secondMigration, brokenMigration, fourthMigration, fifthMigration]);
 
         var exception = Assert.Throws<BusinessDatabaseException>(database.Initialize);
 

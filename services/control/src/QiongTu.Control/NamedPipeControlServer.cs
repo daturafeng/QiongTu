@@ -85,53 +85,61 @@ public sealed class NamedPipeControlServer : IAsyncDisposable
 
     private async Task HandleClientAsync(NamedPipeServerStream pipe, CancellationToken cancellationToken)
     {
-        await using (pipe)
-        using (var reader = new StreamReader(pipe, new UTF8Encoding(false), detectEncodingFromByteOrderMarks: false, leaveOpen: true))
-        await using (var writer = new StreamWriter(pipe, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true })
+        try
         {
-            while (pipe.IsConnected && !cancellationToken.IsCancellationRequested)
+            await using (pipe)
+            using (var reader = new StreamReader(pipe, new UTF8Encoding(false), detectEncodingFromByteOrderMarks: false, leaveOpen: true))
+            await using (var writer = new StreamWriter(pipe, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true })
             {
-                string? line;
-                try
+                while (pipe.IsConnected && !cancellationToken.IsCancellationRequested)
                 {
-                    line = await ReadBoundedLineAsync(reader, MaximumMessageCharacters, cancellationToken);
-                }
-                catch (ControlProtocolException exception)
-                {
-                    await writer.WriteLineAsync(SerializeBoundedResponse(
-                        new ControlResponse(
+                    string? line;
+                    try
+                    {
+                        line = await ReadBoundedLineAsync(reader, MaximumMessageCharacters, cancellationToken);
+                    }
+                    catch (ControlProtocolException exception)
+                    {
+                        await writer.WriteLineAsync(SerializeBoundedResponse(
+                            new ControlResponse(
+                                ContractVersions.ControlApiV1,
+                                string.Empty,
+                                false,
+                                null,
+                                new ControlError(exception.Code, exception.Message))));
+                        break;
+                    }
+
+                    if (line is null)
+                    {
+                        break;
+                    }
+
+                    ControlResponse response;
+                    try
+                    {
+                        var request = JsonSerializer.Deserialize<ControlRequest>(line, SerializerOptions)
+                            ?? throw new JsonException();
+                        response = await _dispatcher.DispatchAsync(request, cancellationToken);
+                    }
+                    catch (JsonException)
+                    {
+                        response = new ControlResponse(
                             ContractVersions.ControlApiV1,
                             string.Empty,
                             false,
                             null,
-                            new ControlError(exception.Code, exception.Message))));
-                    break;
-                }
+                            new ControlError("invalid_json", "The request is not valid control JSON."));
+                    }
 
-                if (line is null)
-                {
-                    break;
+                    await writer.WriteLineAsync(SerializeBoundedResponse(response));
                 }
-
-                ControlResponse response;
-                try
-                {
-                    var request = JsonSerializer.Deserialize<ControlRequest>(line, SerializerOptions)
-                        ?? throw new JsonException();
-                    response = await _dispatcher.DispatchAsync(request, cancellationToken);
-                }
-                catch (JsonException)
-                {
-                    response = new ControlResponse(
-                        ContractVersions.ControlApiV1,
-                        string.Empty,
-                        false,
-                        null,
-                        new ControlError("invalid_json", "The request is not valid control JSON."));
-                }
-
-                await writer.WriteLineAsync(SerializeBoundedResponse(response));
             }
+        }
+        catch (Exception exception) when (exception is IOException or ObjectDisposedException)
+        {
+            // A desktop client may disconnect immediately after receiving a response. The connection ends,
+            // but the control service and other current-user clients must remain available.
         }
     }
 

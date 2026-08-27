@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>QiongTu.ImageProbe</AssemblyName>
+    <RootNamespace>QiongTu.ImageProbe</RootNamespace>
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\..\packages\contracts\dotnet\QiongTu.Contracts\QiongTu.Contracts.csproj" />
+    <PackageReference Include="MetadataExtractor" Version="[2.9.3]" />
+  </ItemGroup>
+</Project>

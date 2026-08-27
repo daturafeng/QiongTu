@@ -24,6 +24,15 @@ public static class ControlMethods
     public const string ResultLineage = "result.lineage";
     public const string CapabilityGet = "capability.get";
     public const string WorkerAdmissionCheck = "worker.admission.check";
+    public const string ImageImportStart = "image-import.start";
+    public const string ImageImportResume = "image-import.resume";
+    public const string ImageImportCancel = "image-import.cancel";
+    public const string ImageImportGet = "image-import.get";
+    public const string ImageImportList = "image-import.list";
+    public const string ImageImportEntryList = "image-import-entry.list";
+    public const string ImageImportPreflightStart = "image-import-preflight.start";
+    public const string ImageImportPreflightGet = "image-import-preflight.get";
+    public const string ImageImportPreflightItemList = "image-import-preflight-item.list";
 }
 
 public sealed record ControlRequest(
@@ -39,7 +48,7 @@ public sealed record ControlResponse(
     object? Result,
     ControlError? Error);
 
-public sealed record ControlError(string Code, string Message);
+public sealed record ControlError(string Code, string Message, object? Details = null);
 
 public sealed record ControlDiscovery(
     string ApiVersion,
@@ -115,7 +124,9 @@ public sealed record NvidiaCapability(
 public sealed record WorkerAdmissionBlockingReason(
     string Category,
     string Code,
-    string Message);
+    string Message,
+    IReadOnlyDictionary<string, long>? RequiredValues = null,
+    IReadOnlyDictionary<string, long>? AvailableValues = null);
 
 public sealed record WorkerAdmissionResult(
     string WorkerType,
@@ -361,3 +372,136 @@ public sealed record ResultLineage(
     IReadOnlyList<ResultDependency> DirectDependencies,
     IReadOnlyList<ResultFile> AvailableFiles,
     IReadOnlyList<QualityReportSummary> FinalQualityReports);
+
+public sealed record ImageImportStartParameters(
+    string DatasetVersionId,
+    string SourceRootPath);
+
+public sealed record ImageImportResumeParameters(
+    string ImportSessionId,
+    string? SourceRootPath = null);
+
+public sealed record ImageImportCancelParameters(string ImportSessionId);
+
+public sealed record ImageImportGetParameters(string ImportSessionId);
+
+public sealed record ImageImportListParameters(
+    string? DatasetVersionId,
+    int? PageSize,
+    string? Cursor);
+
+public sealed record ImageImportEntryListParameters(
+    string ImportSessionId,
+    int? PageSize,
+    string? Cursor);
+
+public sealed record ImageImportPrivacy(
+    bool PathsIncluded,
+    bool HashesIncluded,
+    bool ObjectKeysIncluded,
+    bool StageReceiptsIncluded,
+    bool QuarantineIncluded,
+    bool SourceLocatorsIncluded);
+
+public sealed record ImageImportSession(
+    string ImportSessionId,
+    string DatasetVersionId,
+    string SourceEligibilityState,
+    string Status,
+    int TotalEntryCount,
+    int AvailableEntryCount,
+    int DuplicateEntryCount,
+    int FailedEntryCount,
+    int CancelledEntryCount,
+    string? LastErrorCode,
+    DateTimeOffset CreatedAtUtc,
+    DateTimeOffset UpdatedAtUtc,
+    DateTimeOffset? CompletedAtUtc,
+    DateTimeOffset? CancelledAtUtc,
+    ImageImportPrivacy Privacy);
+
+public sealed record ImageImportEntry(
+    string ImportEntryId,
+    string ImportSessionId,
+    string DatasetVersionId,
+    int SortIndex,
+    string DisplayName,
+    long? ByteLengthSnapshot,
+    DateTimeOffset? SourceLastWriteTimeUtc,
+    string Status,
+    string? FailureCode,
+    string? CanonicalEntryId,
+    DateTimeOffset CreatedAtUtc,
+    DateTimeOffset UpdatedAtUtc,
+    DateTimeOffset? TerminalAtUtc,
+    ImageImportPrivacy Privacy);
+
+public sealed record ImageImportPreflightStartParameters(string ImportSessionId);
+
+public sealed record ImageImportPreflightGetParameters(string PreflightRunId);
+
+public sealed record ImageImportPreflightItemListParameters(
+    string PreflightRunId,
+    int? PageSize,
+    string? Cursor);
+
+public sealed record ImageImportPreflightPrivacy(
+    bool PathsIncluded,
+    bool LocatorsIncluded,
+    bool SourceKeysIncluded,
+    bool HashesIncluded,
+    bool ObjectKeysIncluded,
+    bool StageReceiptsIncluded,
+    bool QuarantineIncluded,
+    bool RawMetadataIncluded,
+    bool SerialNumbersIncluded,
+    bool CoordinatesIncluded,
+    bool OwnerSampleStatisticsIncluded);
+
+public sealed record ImageImportPreflightRun(
+    string PreflightRunId,
+    string ImportSessionId,
+    string DatasetVersionId,
+    string SourceEligibilityState,
+    string Status,
+    string? Decision,
+    string? DecisionReasonCode,
+    string ParserProfile,
+    string ParserVersion,
+    string PolicyVersion,
+    int TotalItemCount,
+    int ImageCandidateCount,
+    int SidecarCandidateCount,
+    int CompletedItemCount,
+    int SupportsDjiItemCount,
+    int OutOfScopeItemCount,
+    int UnconfirmedItemCount,
+    int ConflictItemCount,
+    int FailedItemCount,
+    int BlockingImageCount,
+    string? LastErrorCode,
+    DateTimeOffset CreatedAtUtc,
+    DateTimeOffset? StartedAtUtc,
+    DateTimeOffset UpdatedAtUtc,
+    DateTimeOffset? CompletedAtUtc,
+    ImageImportPreflightPrivacy Privacy);
+
+public sealed record ImageImportPreflightItem(
+    string PreflightItemId,
+    string PreflightRunId,
+    string ImportSessionId,
+    string DatasetVersionId,
+    int SortIndex,
+    string DisplayName,
+    string CandidateKind,
+    string? FormatHint,
+    string Status,
+    string? ContainerHint,
+    string? EvidenceState,
+    IReadOnlyList<string> EvidenceKinds,
+    IReadOnlyList<string> ReasonCodes,
+    string? FailureCode,
+    DateTimeOffset CreatedAtUtc,
+    DateTimeOffset UpdatedAtUtc,
+    DateTimeOffset? CompletedAtUtc,
+    ImageImportPreflightPrivacy Privacy);

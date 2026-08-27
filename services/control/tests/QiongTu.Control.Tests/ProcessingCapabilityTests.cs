@@ -150,6 +150,10 @@ public sealed class ProcessingCapabilityTests
             supervisor.StartAsync("cpu-worker", CancellationToken.None));
 
         Assert.AreEqual("worker_admission_denied", exception.Code);
+        var details = exception.Details as WorkerAdmissionResult;
+        Assert.IsNotNull(details);
+        Assert.AreEqual("denied", details.Decision);
+        AssertReason(details, "insufficient", "available_memory_insufficient");
         Assert.IsEmpty(store.List());
         Assert.AreEqual(0, supervisor.ActiveCount);
     }
@@ -188,9 +192,28 @@ public sealed class ProcessingCapabilityTests
     }
 
     [TestMethod]
-    public void NvidiaNativeProbeReturnsOnlyBoundedLegalStates()
+    public async Task NvidiaProbeRunsInFixedControlChildAndReturnsOnlyBoundedLegalStates()
     {
-        var result = NvidiaNativeProbe.Capture();
+        var controlExecutable = Path.Combine(AppContext.BaseDirectory, "QiongTu.Control.exe");
+        Assert.IsTrue(File.Exists(controlExecutable), $"Expected the built control executable at {controlExecutable}.");
+        var client = new IsolatedNvidiaProbeClient(
+            TimeSpan.FromSeconds(5),
+            () =>
+            {
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = controlExecutable,
+                    WorkingDirectory = AppContext.BaseDirectory,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+                startInfo.ArgumentList.Add(HardwareProbeChildProtocol.Argument);
+                return startInfo;
+            });
+
+        var result = await client.CaptureAsync(CancellationToken.None);
 
         Assert.AreEqual(HardwareProbeChildProtocol.SchemaVersion, result.SchemaVersion);
         Assert.Contains(result.Status, new[] { "present", "missing", "unknown" });
@@ -230,6 +253,81 @@ public sealed class ProcessingCapabilityTests
         Assert.IsLessThanOrEqualTo(
             NamedPipeControlServer.MaximumResponseBytes,
             Encoding.UTF8.GetByteCount(admissionRoot.GetRawText()));
+    }
+
+    [TestMethod]
+    public async Task WorkerStartReturnsStructuredPrivateAdmissionErrorsBeforeCreatingLedger()
+    {
+        var scenarios = new[]
+        {
+            new AdmissionPipeScenario(
+                "missing",
+                "worker_admission_denied",
+                "missing",
+                new FakeHostResourceProbe(),
+                MissingNvidia()),
+            new AdmissionPipeScenario(
+                "unknown",
+                "worker_admission_unknown",
+                "unknown",
+                new FakeHostResourceProbe(),
+                NvidiaProbeResult.Unknown("nvidia_probe_timeout")),
+            new AdmissionPipeScenario(
+                "incompatible",
+                "worker_admission_denied",
+                "incompatible",
+                new FakeHostResourceProbe(),
+                PresentNvidia(cudaDriverApiVersion: 11000)),
+            new AdmissionPipeScenario(
+                "insufficient",
+                "worker_admission_denied",
+                "insufficient",
+                new FakeHostResourceProbe(
+                    memory: new MemoryCapability("present", 8_000, 1_000),
+                    storageFactory: (role, _) => new StorageCapability(role, 16_000, 1_000, "fixed", "present")),
+                PresentNvidia(totalGpuMemoryBytes: 2_000, freeGpuMemoryBytes: 1_000))
+        };
+
+        foreach (var scenario in scenarios)
+        {
+            await using var scope = await PipeCapabilityScope.StartAsync(scenario.Host, scenario.Nvidia);
+            using var response = await scope.SendAsync(
+                ControlMethods.WorkerStart,
+                $"worker-start-{scenario.Name}",
+                new { workerType = "cuda-worker" });
+
+            var root = response.RootElement;
+            Assert.IsFalse(root.GetProperty("ok").GetBoolean(), root.GetRawText());
+            var error = root.GetProperty("error");
+            Assert.AreEqual(scenario.ErrorCode, error.GetProperty("code").GetString());
+            var details = error.GetProperty("details");
+            Assert.AreEqual("cuda-worker", details.GetProperty("workerType").GetString());
+            Assert.AreEqual(scenario.Decision, details.GetProperty("decision").GetString());
+            Assert.IsTrue(details.GetProperty("blockingReasons").EnumerateArray().Any(reason =>
+                reason.GetProperty("category").GetString() == scenario.Category));
+
+            var responseJson = root.GetRawText();
+            Assert.IsLessThanOrEqualTo(NamedPipeControlServer.MaximumResponseBytes, Encoding.UTF8.GetByteCount(responseJson));
+            Assert.DoesNotContain(scope.Root, responseJson, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(":\\", responseJson);
+            Assert.DoesNotContain("secret-token", responseJson, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(Environment.CommandLine, responseJson, StringComparison.OrdinalIgnoreCase);
+
+            if (scenario.Name == "insufficient")
+            {
+                var memoryReason = details.GetProperty("blockingReasons").EnumerateArray().Single(reason =>
+                    reason.GetProperty("code").GetString() == "available_memory_insufficient");
+                Assert.AreEqual(
+                    2_000,
+                    memoryReason.GetProperty("requiredValues").GetProperty("availableMemoryBytes").GetInt64());
+                Assert.AreEqual(
+                    1_000,
+                    memoryReason.GetProperty("availableValues").GetProperty("availableMemoryBytes").GetInt64());
+            }
+
+            using var workers = await scope.SendAsync(ControlMethods.WorkerList, $"worker-list-{scenario.Name}", null);
+            Assert.IsEmpty(workers.RootElement.GetProperty("result").EnumerateArray());
+        }
     }
 
     private static JsonElement Ok(JsonDocument document)
@@ -344,6 +442,16 @@ public sealed class ProcessingCapabilityTests
         }
     }
 
+    private sealed record AdmissionPipeScenario(
+        string Name,
+        string ErrorCode,
+        string Category,
+        FakeHostResourceProbe Host,
+        NvidiaProbeResult Nvidia)
+    {
+        public string Decision => Category == "unknown" ? "unknown" : "denied";
+    }
+
     private sealed class CapabilityScope : IDisposable
     {
         public CapabilityScope()
@@ -391,7 +499,9 @@ public sealed class ProcessingCapabilityTests
 
         private string PipeName { get; }
 
-        public static async Task<PipeCapabilityScope> StartAsync()
+        public static async Task<PipeCapabilityScope> StartAsync(
+            IHostResourceProbe? hostProbe = null,
+            NvidiaProbeResult? nvidia = null)
         {
             var root = Path.Combine(Path.GetTempPath(), $"qiongtu-capability-pipe-tests-{Guid.NewGuid():N}");
             Directory.CreateDirectory(root);
@@ -402,8 +512,8 @@ public sealed class ProcessingCapabilityTests
             var capabilities = new ProcessingCapabilityService(
                 registry,
                 paths,
-                new FakeHostResourceProbe(),
-                new FakeNvidiaProbeClient(MissingNvidia()));
+                hostProbe ?? new FakeHostResourceProbe(),
+                new FakeNvidiaProbeClient(nvidia ?? MissingNvidia()));
             var store = new WorkerRuntimeStore(paths.RuntimeDatabase);
             store.Initialize();
             var businessDatabase = new BusinessDatabase(paths.BusinessDatabase);

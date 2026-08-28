@@ -11,6 +11,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\..\..\packages\contracts\dotnet\QiongTu.Contracts\QiongTu.Contracts.csproj" />
+    <PackageReference Include="Magick.NET-Q16-x64" Version="[14.16.0]" />
     <PackageReference Include="MetadataExtractor" Version="[2.9.3]" />
   </ItemGroup>
 </Project>

@@ -3,6 +3,7 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Magick.NET-Q16-x64" Version="[14.16.0]" />
     <PackageReference Include="MSTest" Version="4.0.2" />
   </ItemGroup>
   <ItemGroup>

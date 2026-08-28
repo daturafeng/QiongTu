@@ -96,6 +96,49 @@ internal static class StdioEnvelope
         }
     }
 
+    public static void ValidateCasHeader(ImageProbeCasImageRequestHeader header)
+    {
+        if (!string.Equals(header.SchemaVersion, ImageProbeProtocol.CasImageV1, StringComparison.Ordinal) ||
+            !string.Equals(header.Profile, ImageProbeProtocol.CasImageProfile, StringComparison.Ordinal))
+        {
+            throw new ImageProbeProtocolException("unsupported_protocol");
+        }
+
+        if (header.ObjectKind != "source_image")
+        {
+            throw new ImageProbeProtocolException("invalid_object_kind");
+        }
+
+        if (header.ExpectedByteLength is <= 0 or > ImageProbeProtocol.MaximumCasObjectBytes)
+        {
+            throw new ImageProbeProtocolException("object_size_out_of_range");
+        }
+
+        if (string.IsNullOrEmpty(header.FormalObjectRoot) ||
+            header.FormalObjectRoot.Length > 32_767 ||
+            header.FormalObjectRoot.IndexOf('\0') >= 0 ||
+            !Path.IsPathFullyQualified(header.FormalObjectRoot) ||
+            header.FormalObjectRoot.StartsWith("\\\\", StringComparison.Ordinal))
+        {
+            throw new ImageProbeProtocolException("formal_object_root_invalid");
+        }
+
+        if (!IsLowercaseSha256(header.ExpectedSha256))
+        {
+            throw new ImageProbeProtocolException("expected_hash_invalid");
+        }
+
+        var expectedObjectKey = $"sha256/{header.ExpectedSha256[..2]}/{header.ExpectedSha256}";
+        if (!string.Equals(header.ObjectKey, expectedObjectKey, StringComparison.Ordinal))
+        {
+            throw new ImageProbeProtocolException("object_key_invalid");
+        }
+    }
+
+    private static bool IsLowercaseSha256(string? value) =>
+        value is { Length: 64 } &&
+        value.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
+
     public static async Task ReadExactlyAsync(
         Stream input,
         Memory<byte> destination,

@@ -1,0 +1,410 @@
+using System.Buffers.Binary;
+using System.Security.Cryptography;
+using System.Text.Json;
+using ImageMagick;
+using QiongTu.Contracts;
+
+namespace QiongTu.ImageProbe.Tests;
+
+[TestClass]
+[DoNotParallelize]
+public sealed class CasImageAnalyzerTests
+{
+    private static readonly byte[] ValidJpeg = Convert.FromBase64String(
+        "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBT/wAARCAADAAQDAREAAhEBAxEB/8QAFAABAAAAAAAAAAAAAAAAAAAACP/EABQQAQAAAAAAAAAAAAAAAAAAAAD/xAAVAQEBAAAAAAAAAAAAAAAAAAAHCf/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/ADoDFU3/2Q==");
+    private static readonly byte[] AuxiliaryJpeg = Convert.FromBase64String(
+        "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBT/wAARCAABAAIDAREAAhEBAxEB/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/xAAVAQEBAAAAAAAAAAAAAAAAAAAGCf/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AD3VTB3/2Q==");
+    private static readonly byte[] ValidMpo = CreateMpo(ValidJpeg, AuxiliaryJpeg);
+    private static readonly byte[] ValidTiff = Convert.FromBase64String(
+        "SUkqAIAAAAAAAICAAAAAAICAAAAAAICAAAAAAICAAAAAAICAAAAAAICAAAAAAICAAAAAAICAAAAAAICAAAAAAICAAAAAAICAAAAAAICAAAAAAICAAAAAAICAAAAAAICAAAAAAICAAAAAAICAAAAAAICAAAAAAICAAAAAAICAAAAPAAABAwABAAAABQAAAAEBAwABAAAABAAAAAIBAwADAAAAOgEAAAMBAwABAAAAAQAAAAYBAwABAAAAAgAAAAoBAwABAAAAAQAAABEBBAABAAAACAAAABIBAwABAAAAAQAAABUBAwABAAAAAwAAABYBAwABAAAABAAAABcBBAABAAAAeAAAABwBAwABAAAAAQAAACkBAwACAAAAAAABAD4BBQACAAAAcAEAAD8BBQAGAAAAQAEAAAAAAAAQABAAEACF61EAAACAAMP1qAAAAAACzcxMAAAAAAHNzEwAAACAAM3MTAAAAAACj8L1AAAAABA3GqAAAAAAAiuHCgAAACAA");
+    private static readonly byte[] ValidMultiPageTiff = CreateClassicRgbTiff(pageCount: 2, bitsPerSample: 16);
+
+    [TestMethod]
+    public void Analyze_ValidJpeg_CrossChecksStructureAndNativeDecoder()
+    {
+        var result = AnalyzeFormalObject(ValidJpeg);
+
+        Assert.AreEqual("completed", result.Status, string.Join(',', result.ReasonCodes));
+        Assert.AreEqual("jpeg", result.Container);
+        Assert.AreEqual("validated", result.StructureState);
+        Assert.AreEqual("decoded", result.DecodeState);
+        Assert.HasCount(1, result.Frames);
+        Assert.AreEqual(4, result.Frames[0].Width);
+        Assert.AreEqual(3, result.Frames[0].Height);
+        Assert.AreEqual(8, result.Frames[0].BitsPerChannel);
+        AssertPrivacy(result);
+    }
+
+    [TestMethod]
+    public void Analyze_ValidMpo_ValidatesEveryDeclaredJpegRange()
+    {
+        var result = AnalyzeFormalObject(ValidMpo);
+
+        Assert.AreEqual("completed", result.Status, string.Join(',', result.ReasonCodes));
+        Assert.AreEqual("mpo", result.Container);
+        Assert.HasCount(2, result.Frames);
+        Assert.AreEqual("mp_primary_image", result.Frames[0].FrameKind);
+        Assert.AreEqual("mp_auxiliary_image", result.Frames[1].FrameKind);
+        Assert.AreEqual(0, result.Frames[0].ByteOffset);
+        Assert.AreEqual(ValidMpo.Length - AuxiliaryJpeg.Length, result.Frames[1].ByteOffset);
+        Assert.AreEqual(4, result.Frames[0].Width);
+        Assert.AreEqual(2, result.Frames[1].Width);
+        AssertPrivacy(result);
+    }
+
+    [TestMethod]
+    public void Analyze_ValidClassicTiff_CrossChecksIfdAndDecodedPage()
+    {
+        var result = AnalyzeFormalObject(ValidTiff);
+
+        Assert.AreEqual("completed", result.Status, string.Join(',', result.ReasonCodes));
+        Assert.AreEqual("tiff", result.Container);
+        Assert.HasCount(1, result.Frames);
+        Assert.AreEqual(5, result.Frames[0].Width);
+        Assert.AreEqual(4, result.Frames[0].Height);
+        Assert.AreEqual(16, result.Frames[0].BitsPerChannel);
+        Assert.AreEqual("decoded", result.Frames[0].DecodeState);
+        AssertPrivacy(result);
+    }
+
+    [TestMethod]
+    public void Analyze_ClassicMultiPage16BitTiff_PreservesEveryPageAndDepth()
+    {
+        var result = AnalyzeFormalObject(ValidMultiPageTiff);
+
+        Assert.AreEqual("completed", result.Status, string.Join(',', result.ReasonCodes));
+        Assert.AreEqual("tiff", result.Container);
+        Assert.HasCount(2, result.Frames);
+        Assert.IsTrue(result.Frames.All(frame => frame.BitsPerChannel == 16));
+        Assert.IsTrue(result.Frames.All(frame => frame.DecodeState == "decoded"));
+        AssertPrivacy(result);
+    }
+
+    [TestMethod]
+    public void Analyze_TiffIfdCycle_ReturnsStableBlockedReason()
+    {
+        var malformed = CreateClassicRgbTiff(pageCount: 1, bitsPerSample: 8);
+        const int nextIfdOffset = 8 + 2 + (10 * 12);
+        BinaryPrimitives.WriteUInt32LittleEndian(malformed.AsSpan(nextIfdOffset, 4), 8);
+
+        var result = AnalyzeFormalObject(malformed);
+
+        Assert.AreEqual("blocked", result.Status);
+        CollectionAssert.Contains(result.ReasonCodes.ToArray(), "tiff_ifd_cycle");
+        AssertPrivacy(result);
+    }
+
+    [TestMethod]
+    public void Analyze_TruncatedJpeg_ReturnsStableStructureFailure()
+    {
+        var result = AnalyzeFormalObject(ValidJpeg[..^1]);
+
+        Assert.AreEqual("blocked", result.Status);
+        CollectionAssert.Contains(result.ReasonCodes.ToArray(), "jpeg_scan_truncated");
+        AssertPrivacy(result);
+    }
+
+    [TestMethod]
+    public void Analyze_MpfRangeOutsideObject_ReturnsStableBlockedReason()
+    {
+        var malformed = ValidMpo.ToArray();
+        var secondOffsetField = FindMpfEntryTable(malformed) + 16 + 8;
+        BinaryPrimitives.WriteUInt32LittleEndian(malformed.AsSpan(secondOffsetField, 4), uint.MaxValue);
+
+        var result = AnalyzeFormalObject(malformed);
+
+        Assert.AreEqual("blocked", result.Status);
+        CollectionAssert.Contains(result.ReasonCodes.ToArray(), "mpf_range_out_of_bounds");
+        Assert.HasCount(0, result.Frames);
+        AssertPrivacy(result);
+    }
+
+    [TestMethod]
+    public void Analyze_MpfRangesOverlap_ReturnsStableBlockedReason()
+    {
+        var malformed = ValidMpo.ToArray();
+        var secondOffsetField = FindMpfEntryTable(malformed) + 16 + 8;
+        BinaryPrimitives.WriteUInt32LittleEndian(malformed.AsSpan(secondOffsetField, 4), 1);
+
+        var result = AnalyzeFormalObject(malformed);
+
+        Assert.AreEqual("blocked", result.Status);
+        CollectionAssert.Contains(result.ReasonCodes.ToArray(), "mpf_ranges_overlap");
+        AssertPrivacy(result);
+    }
+
+    [TestMethod]
+    public void Analyze_BigTiffHeader_IsRecognizedAndExplicitlyBlocked()
+    {
+        var bigTiffHeader = new byte[]
+        {
+            (byte)'I', (byte)'I', 43, 0, 8, 0, 0, 0,
+            16, 0, 0, 0, 0, 0, 0, 0
+        };
+
+        var result = AnalyzeFormalObject(bigTiffHeader);
+
+        Assert.AreEqual("blocked", result.Status);
+        CollectionAssert.Contains(result.ReasonCodes.ToArray(), "bigtiff_not_supported");
+        AssertPrivacy(result);
+    }
+
+    [TestMethod]
+    public void Analyze_UnsupportedContent_DoesNotInvokeAnAutomaticCoder()
+    {
+        var disguisedSvg = "<svg xmlns=\"http://www.w3.org/2000/svg\"><rect width=\"1\" height=\"1\"/></svg>"u8.ToArray();
+
+        var result = AnalyzeFormalObject(disguisedSvg);
+
+        Assert.AreEqual("blocked", result.Status);
+        CollectionAssert.Contains(result.ReasonCodes.ToArray(), "unsupported_image_container");
+        Assert.AreEqual("not_decoded", result.DecodeState);
+        AssertPrivacy(result);
+    }
+
+    [TestMethod]
+    public void NativePolicy_DeniesNonAllowlistedCoderAndExternalInterpretation()
+    {
+        using var runtime = CasImageAnalyzer.CreateNativeRuntimeForTests();
+        var disguisedSvg = "<svg xmlns=\"http://www.w3.org/2000/svg\"><rect width=\"1\" height=\"1\"/></svg>"u8.ToArray();
+
+        _ = Assert.Throws<MagickPolicyErrorException>(() =>
+        {
+            using var image = new MagickImage(disguisedSvg);
+        });
+    }
+
+    [TestMethod]
+    public void ValidateCasHeader_RejectsNonCanonicalObjectKey()
+    {
+        var hash = new string('a', 64);
+        var header = new ImageProbeCasImageRequestHeader(
+            ImageProbeProtocol.CasImageV1,
+            ImageProbeProtocol.CasImageProfile,
+            "source_image",
+            Path.GetFullPath(Path.GetTempPath()),
+            "../staging/payload",
+            hash,
+            1);
+
+        var exception = Assert.Throws<ImageProbeProtocolException>(() =>
+            StdioEnvelope.ValidateCasHeader(header));
+
+        Assert.AreEqual("object_key_invalid", exception.Code);
+    }
+
+    [TestMethod]
+    public void ValidateCasHeader_RejectsNetworkFormalObjectRoot()
+    {
+        var hash = new string('a', 64);
+        var header = new ImageProbeCasImageRequestHeader(
+            ImageProbeProtocol.CasImageV1,
+            ImageProbeProtocol.CasImageProfile,
+            "source_image",
+            "\\\\server\\share\\published",
+            $"sha256/aa/{hash}",
+            hash,
+            1);
+
+        var exception = Assert.Throws<ImageProbeProtocolException>(() =>
+            StdioEnvelope.ValidateCasHeader(header));
+
+        Assert.AreEqual("formal_object_root_invalid", exception.Code);
+    }
+
+    [TestMethod]
+    public void ResultSerialization_DoesNotContainFormalPathHashOrObjectKey()
+    {
+        var root = CreateFormalObject(ValidJpeg, out var header);
+        try
+        {
+            var result = CasImageAnalyzer.Analyze(header);
+            var json = JsonSerializer.Serialize(result, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+            Assert.DoesNotContain(root, json, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(header.ExpectedSha256, json, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(header.ObjectKey, json, StringComparison.OrdinalIgnoreCase);
+            AssertPrivacy(result);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static ImageProbeCasImageResult AnalyzeFormalObject(byte[] bytes)
+    {
+        var root = CreateFormalObject(bytes, out var header);
+        try
+        {
+            return CasImageAnalyzer.Analyze(header);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static string CreateFormalObject(byte[] bytes, out ImageProbeCasImageRequestHeader header)
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"qiongtu-cas-probe-{Guid.NewGuid():N}");
+        var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        var objectKey = $"sha256/{hash[..2]}/{hash}";
+        var path = Path.Combine(root, objectKey.Replace('/', Path.DirectorySeparatorChar));
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllBytes(path, bytes);
+        header = new ImageProbeCasImageRequestHeader(
+            ImageProbeProtocol.CasImageV1,
+            ImageProbeProtocol.CasImageProfile,
+            "source_image",
+            root,
+            objectKey,
+            hash,
+            bytes.LongLength);
+        StdioEnvelope.ValidateCasHeader(header);
+        return root;
+    }
+
+    private static byte[] CreateMpo(byte[] primary, byte[] auxiliary)
+    {
+        const int tiffHeaderLength = 8;
+        const int ifdLength = 2 + (3 * 12) + 4;
+        const int mpEntryOffset = tiffHeaderLength + ifdLength;
+        const int mpEntryBytes = 2 * 16;
+        var tiff = new byte[mpEntryOffset + mpEntryBytes];
+        tiff[0] = (byte)'I';
+        tiff[1] = (byte)'I';
+        BinaryPrimitives.WriteUInt16LittleEndian(tiff.AsSpan(2, 2), 42);
+        BinaryPrimitives.WriteUInt32LittleEndian(tiff.AsSpan(4, 4), 8);
+        BinaryPrimitives.WriteUInt16LittleEndian(tiff.AsSpan(8, 2), 3);
+        WriteIfdEntry(tiff, 10, 0xb000, 7, 4, 0x30303130);
+        WriteIfdEntry(tiff, 22, 0xb001, 4, 1, 2);
+        WriteIfdEntry(tiff, 34, 0xb002, 7, mpEntryBytes, mpEntryOffset);
+        BinaryPrimitives.WriteUInt32LittleEndian(tiff.AsSpan(46, 4), 0);
+
+        var app2PayloadLength = 4 + tiff.Length;
+        var app2LengthField = checked((ushort)(app2PayloadLength + 2));
+        var app2 = new byte[2 + 2 + app2PayloadLength];
+        app2[0] = 0xff;
+        app2[1] = 0xe2;
+        BinaryPrimitives.WriteUInt16BigEndian(app2.AsSpan(2, 2), app2LengthField);
+        "MPF\0"u8.CopyTo(app2.AsSpan(4, 4));
+        tiff.CopyTo(app2, 8);
+
+        var firstLength = checked(primary.Length + app2.Length);
+        var mpBase = 2 + 2 + 2 + 4;
+        WriteMpEntry(app2, 8 + mpEntryOffset, firstLength, 0);
+        WriteMpEntry(app2, 8 + mpEntryOffset + 16, auxiliary.Length, firstLength - mpBase);
+
+        var result = new byte[firstLength + auxiliary.Length];
+        primary.AsSpan(0, 2).CopyTo(result);
+        app2.CopyTo(result, 2);
+        primary.AsSpan(2).CopyTo(result.AsSpan(2 + app2.Length));
+        auxiliary.CopyTo(result, firstLength);
+        return result;
+    }
+
+    private static byte[] CreateClassicRgbTiff(int pageCount, ushort bitsPerSample)
+    {
+        const int firstIfdOffset = 8;
+        const int entryCount = 10;
+        const int ifdLength = 2 + (entryCount * 12) + 4;
+        const int width = 2;
+        const int height = 1;
+        var bytesPerSample = bitsPerSample / 8;
+        var pixelByteCount = checked(width * height * 3 * bytesPerSample);
+        var dataStart = checked(firstIfdOffset + (pageCount * ifdLength));
+        var pageDataLength = checked(6 + pixelByteCount);
+        var bytes = new byte[checked(dataStart + (pageCount * pageDataLength))];
+        bytes[0] = (byte)'I';
+        bytes[1] = (byte)'I';
+        BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(2, 2), 42);
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(4, 4), firstIfdOffset);
+
+        for (var page = 0; page < pageCount; page++)
+        {
+            var ifdOffset = firstIfdOffset + (page * ifdLength);
+            var bitsOffset = dataStart + (page * pageDataLength);
+            var pixelOffset = bitsOffset + 6;
+            BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(ifdOffset, 2), entryCount);
+            var entry = ifdOffset + 2;
+            WriteIfdEntry(bytes, entry, 256, 4, 1, width);
+            entry += 12;
+            WriteIfdEntry(bytes, entry, 257, 4, 1, height);
+            entry += 12;
+            WriteIfdEntry(bytes, entry, 258, 3, 3, checked((uint)bitsOffset));
+            entry += 12;
+            WriteIfdEntry(bytes, entry, 259, 3, 1, 1);
+            entry += 12;
+            WriteIfdEntry(bytes, entry, 262, 3, 1, 2);
+            entry += 12;
+            WriteIfdEntry(bytes, entry, 273, 4, 1, checked((uint)pixelOffset));
+            entry += 12;
+            WriteIfdEntry(bytes, entry, 274, 3, 1, 1);
+            entry += 12;
+            WriteIfdEntry(bytes, entry, 277, 3, 1, 3);
+            entry += 12;
+            WriteIfdEntry(bytes, entry, 278, 4, 1, height);
+            entry += 12;
+            WriteIfdEntry(bytes, entry, 279, 4, 1, checked((uint)pixelByteCount));
+            entry += 12;
+            var nextIfd = page + 1 < pageCount ? ifdOffset + ifdLength : 0;
+            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(entry, 4), checked((uint)nextIfd));
+            BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(bitsOffset, 2), bitsPerSample);
+            BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(bitsOffset + 2, 2), bitsPerSample);
+            BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(bitsOffset + 4, 2), bitsPerSample);
+            for (var index = 0; index < pixelByteCount; index++)
+            {
+                bytes[pixelOffset + index] = (byte)((page + 1) * 31 + index);
+            }
+        }
+
+        return bytes;
+    }
+
+    private static void WriteIfdEntry(
+        byte[] bytes,
+        int offset,
+        ushort tag,
+        ushort type,
+        uint count,
+        uint value)
+    {
+        BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(offset, 2), tag);
+        BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(offset + 2, 2), type);
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(offset + 4, 4), count);
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(offset + 8, 4), value);
+    }
+
+    private static void WriteMpEntry(byte[] app2, int offset, int size, int dataOffset)
+    {
+        BinaryPrimitives.WriteUInt32LittleEndian(app2.AsSpan(offset, 4), 0x020003);
+        BinaryPrimitives.WriteUInt32LittleEndian(app2.AsSpan(offset + 4, 4), checked((uint)size));
+        BinaryPrimitives.WriteUInt32LittleEndian(app2.AsSpan(offset + 8, 4), checked((uint)dataOffset));
+        BinaryPrimitives.WriteUInt16LittleEndian(app2.AsSpan(offset + 12, 2), 0);
+        BinaryPrimitives.WriteUInt16LittleEndian(app2.AsSpan(offset + 14, 2), 0);
+    }
+
+    private static int FindMpfEntryTable(byte[] bytes)
+    {
+        var mpf = bytes.AsSpan().IndexOf("MPF\0"u8);
+        Assert.IsGreaterThanOrEqualTo(0, mpf);
+        var tiffBase = mpf + 4;
+        var ifdOffset = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(tiffBase + 4, 4)));
+        var thirdEntry = tiffBase + ifdOffset + 2 + (2 * 12);
+        var entryOffset = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(thirdEntry + 8, 4)));
+        return tiffBase + entryOffset;
+    }
+
+    private static void AssertPrivacy(ImageProbeCasImageResult result)
+    {
+        Assert.IsFalse(result.Privacy.PathsIncluded);
+        Assert.IsFalse(result.Privacy.LocatorsIncluded);
+        Assert.IsFalse(result.Privacy.ContentHashesIncluded);
+        Assert.IsFalse(result.Privacy.ObjectKeysIncluded);
+        Assert.IsFalse(result.Privacy.RawMetadataIncluded);
+        Assert.IsFalse(result.Privacy.SerialNumbersIncluded);
+        Assert.IsFalse(result.Privacy.CoordinatesIncluded);
+        Assert.IsFalse(result.Privacy.OwnerSampleStatisticsIncluded);
+    }
+}

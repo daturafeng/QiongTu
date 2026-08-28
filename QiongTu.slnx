@@ -16,6 +16,13 @@
     <Project Path="packages/contracts/dotnet/QiongTu.Contracts/QiongTu.Contracts.csproj" />
   </Folder>
   <Folder Name="/services/" />
+  <Folder Name="/services/image-probe/" />
+  <Folder Name="/services/image-probe/src/">
+    <Project Path="services/image-probe/src/QiongTu.ImageProbe/QiongTu.ImageProbe.csproj" />
+  </Folder>
+  <Folder Name="/services/image-probe/tests/">
+    <Project Path="services/image-probe/tests/QiongTu.ImageProbe.Tests/QiongTu.ImageProbe.Tests.csproj" />
+  </Folder>
   <Folder Name="/services/control/" />
   <Folder Name="/services/control/src/">
     <Project Path="services/control/src/QiongTu.Control/QiongTu.Control.csproj" />

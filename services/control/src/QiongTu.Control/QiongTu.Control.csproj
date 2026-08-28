@@ -16,4 +16,13 @@
   <ItemGroup>
     <EmbeddedResource Include="Migrations\Business\*.sql" />
   </ItemGroup>
+  <Target Name="PublishIsolatedImageProbe" AfterTargets="Publish" Condition="'$(RuntimeIdentifier)' == 'win-x64' and '$(SkipImageProbePublish)' != 'true'">
+    <PropertyGroup>
+      <ImageProbePublishDirectory>$(PublishDir)image-probe\</ImageProbePublishDirectory>
+    </PropertyGroup>
+    <MSBuild
+      Projects="..\..\..\image-probe\src\QiongTu.ImageProbe\QiongTu.ImageProbe.csproj"
+      Targets="Publish"
+      Properties="Configuration=$(Configuration);RuntimeIdentifier=win-x64;PublishDir=$(ImageProbePublishDirectory);SkipImageProbePublish=true" />
+  </Target>
 </Project>

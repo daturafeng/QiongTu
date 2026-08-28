@@ -49,8 +49,32 @@ public sealed class ImageSourcePreflightProbeTests
             null,
             CancellationToken.None);
 
-        Assert.AreEqual(ImageProbeProtocol.MaximumPayloadBytes, source.Position);
+        Assert.AreEqual(ImageProbeProtocol.MaximumPayloadBytes + 1, source.Position);
         Assert.AreEqual("unconfirmed", result.EvidenceState);
+        CollectionAssert.Contains(result.ReasonCodes.ToArray(), "evidence_read_limit_exceeded");
+    }
+
+    [TestMethod]
+    public async Task AnalyzeAsync_DjiEvidenceInTruncatedPrefixCannotPassTheInputLimit()
+    {
+        var djiPrefix = CreateDjiXmpJpeg();
+        var payload = new byte[ImageProbeProtocol.MaximumPayloadBytes + 1];
+        djiPrefix.CopyTo(payload, 0);
+        using var source = new MemoryStream(payload, writable: false);
+        var client = new IsolatedImageSourcePreflightProbeClient(
+            new ImageSourcePreflightProbeOptions(Timeout: TimeSpan.FromSeconds(10)),
+            CreateDevelopmentProbeStartInfo);
+
+        var result = await client.AnalyzeAsync(
+            source,
+            "image_candidate",
+            null,
+            null,
+            CancellationToken.None);
+
+        Assert.AreEqual("unconfirmed", result.EvidenceState);
+        CollectionAssert.Contains(result.EvidenceKinds.ToArray(), "dji_xmp_namespace");
+        CollectionAssert.Contains(result.ReasonCodes.ToArray(), "evidence_read_limit_exceeded");
     }
 
     [TestMethod]
@@ -79,6 +103,30 @@ public sealed class ImageSourcePreflightProbeTests
                 CancellationToken.None));
 
         Assert.AreEqual("image_probe_timeout", exception.Code);
+    }
+
+    [TestMethod]
+    public async Task AnalyzeAsync_OversizedChildOutputReturnsOnlyTheStableLimitCode()
+    {
+        var client = new IsolatedImageSourcePreflightProbeClient(
+            new ImageSourcePreflightProbeOptions(
+                Timeout: TimeSpan.FromSeconds(10),
+                MaximumOutputBytes: 128),
+            CreateDevelopmentProbeStartInfo);
+
+        var exception = await Assert.ThrowsAsync<ImageSourcePreflightProbeException>(() =>
+            client.AnalyzeAsync(
+                new MemoryStream(SourcePreflightSyntheticFixture.DjiXmp(), writable: false),
+                "image_candidate",
+                null,
+                null,
+                CancellationToken.None));
+
+        Assert.AreEqual("image_probe_output_limit_exceeded", exception.Code);
+        Assert.DoesNotContain(
+            SourcePreflightSyntheticFixture.PrivateDeviceMarker,
+            exception.Message,
+            StringComparison.Ordinal);
     }
 
     [TestMethod]

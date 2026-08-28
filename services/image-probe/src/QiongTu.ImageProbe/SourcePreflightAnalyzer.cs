@@ -69,6 +69,11 @@ public static class SourcePreflightAnalyzer
         {
             using var stream = new MemoryStream(payload.ToArray(), writable: false);
             var directories = ImageMetadataReader.ReadMetadata(stream);
+            if (directories.Any(directory => directory.HasError))
+            {
+                reasonCodes.Add("metadata_unreadable_or_truncated");
+            }
+
             var ifd0 = directories.OfType<ExifIfd0Directory>().FirstOrDefault();
             make = NormalizeMetadataValue(ifd0?.GetString(ExifDirectoryBase.TagMake));
             model = NormalizeMetadataValue(ifd0?.GetString(ExifDirectoryBase.TagModel));
@@ -112,6 +117,10 @@ public static class SourcePreflightAnalyzer
         {
             evidenceState = "conflict";
             reasonCodes.Add("manufacturer_xmp_conflict");
+        }
+        else if (reasonCodes.Contains("metadata_unreadable_or_truncated"))
+        {
+            evidenceState = "unconfirmed";
         }
         else if (makeIsDji || hasDjiXmp)
         {

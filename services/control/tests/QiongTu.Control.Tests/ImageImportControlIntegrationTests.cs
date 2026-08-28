@@ -359,7 +359,7 @@ public sealed class ImageImportControlIntegrationTests
                 new ImageSourcePreflightProbe(
                     sourceDiscovery,
                     preflightProbeClient ?? new PipePreflightProbeClient()),
-                imageImports,
+                imageImports.EnqueueApprovedSessionAsync,
                 paths);
 
             var registry = new WorkerRegistry();

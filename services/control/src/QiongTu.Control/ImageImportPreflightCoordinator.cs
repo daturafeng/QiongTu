@@ -12,7 +12,7 @@ internal sealed class ImageImportPreflightCoordinator : IAsyncDisposable
     private readonly ImageImportSourceSecurity _sourceSecurity;
     private readonly ImageImportSourceDiscovery _sourceDiscovery;
     private readonly ImageSourcePreflightProbe _probe;
-    private readonly ImageImportCoordinator _imageImports;
+    private readonly Func<string, CancellationToken, Task> _enqueueApprovedSessionAsync;
     private readonly ControlDataPaths _controlDataPaths;
     private readonly Channel<string> _queue;
     private readonly CancellationTokenSource _stop = new();
@@ -26,7 +26,7 @@ internal sealed class ImageImportPreflightCoordinator : IAsyncDisposable
         ImageImportSourceSecurity sourceSecurity,
         ImageImportSourceDiscovery sourceDiscovery,
         ImageSourcePreflightProbe probe,
-        ImageImportCoordinator imageImports,
+        Func<string, CancellationToken, Task> enqueueApprovedSessionAsync,
         ControlDataPaths controlDataPaths,
         ImageImportPreflightCoordinatorOptions? options = null)
     {
@@ -34,7 +34,8 @@ internal sealed class ImageImportPreflightCoordinator : IAsyncDisposable
         _sourceSecurity = sourceSecurity ?? throw new ArgumentNullException(nameof(sourceSecurity));
         _sourceDiscovery = sourceDiscovery ?? throw new ArgumentNullException(nameof(sourceDiscovery));
         _probe = probe ?? throw new ArgumentNullException(nameof(probe));
-        _imageImports = imageImports ?? throw new ArgumentNullException(nameof(imageImports));
+        _enqueueApprovedSessionAsync = enqueueApprovedSessionAsync
+            ?? throw new ArgumentNullException(nameof(enqueueApprovedSessionAsync));
         _controlDataPaths = controlDataPaths ?? throw new ArgumentNullException(nameof(controlDataPaths));
         var effectiveOptions = options ?? new ImageImportPreflightCoordinatorOptions();
         if (effectiveOptions.QueueCapacity <= 0)
@@ -236,7 +237,7 @@ internal sealed class ImageImportPreflightCoordinator : IAsyncDisposable
         var completed = _catalog.CommitDecision(runId);
         if (completed.Decision == "dji_supported")
         {
-            await _imageImports.EnqueueApprovedSessionAsync(
+            await _enqueueApprovedSessionAsync(
                 completed.ImportSessionId,
                 cancellationToken);
         }

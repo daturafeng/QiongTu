@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using QiongTu.Contracts;
 
@@ -99,6 +101,171 @@ public sealed class ImageImportPreflightCoordinatorTests
     }
 
     [TestMethod]
+    public async Task RealProbeDjiExifBatchPassesWithoutDependingOnTheFileName()
+    {
+        await using var scope = await CoordinatorScope.CreateWithRealProbeAsync();
+        await scope.WriteSourceAsync("IMG_0001.JPG", SourcePreflightSyntheticFixture.DjiExif());
+        await scope.StartImportAsync("dataset-version-real-dji", "session-real-dji");
+
+        var queued = await scope.PreflightCoordinator.StartAsync(
+            "preflight-request-real-dji",
+            new ImageImportPreflightStartParameters("session-real-dji"));
+        await scope.PreflightCoordinator.WaitUntilIdleAsync().WaitAsync(TimeSpan.FromSeconds(20));
+        await scope.ImportCoordinator.WaitUntilIdleAsync().WaitAsync(TimeSpan.FromSeconds(20));
+
+        var completed = scope.PreflightCatalog.Get(
+            new ImageImportPreflightGetParameters(queued.PreflightRunId));
+        Assert.AreEqual("dji_supported", completed.Decision);
+        Assert.AreEqual("completed", scope.ImportCatalog.Get(
+            new ImageImportGetParameters("session-real-dji")).Status);
+        Assert.AreEqual(1L, scope.Scalar<long>("SELECT count(*) FROM file_objects WHERE object_kind='source_image';"));
+        Assert.AreEqual(0L, scope.Scalar<long>("SELECT count(*) FROM images;"));
+        Assert.AreEqual(0L, scope.Scalar<long>("SELECT count(*) FROM processing_jobs;"));
+        scope.AssertPreflightPersistenceIsPrivate();
+    }
+
+    [TestMethod]
+    [DataRow("other_manufacturer", "out_of_scope", "other_manufacturer_detected")]
+    [DataRow("evidence_conflict", "out_of_scope", "source_evidence_conflict")]
+    [DataRow("filename_spoof", "unconfirmed", "dji_evidence_incomplete")]
+    [DataRow("unreadable_metadata", "unconfirmed", "dji_evidence_incomplete")]
+    [DataRow("input_limit", "unconfirmed", "dji_evidence_incomplete")]
+    public async Task RealProbeBlockingBatchesNeverPublishOrCreateFormalRecords(
+        string scenario,
+        string expectedDecision,
+        string expectedReason)
+    {
+        await using var scope = await CoordinatorScope.CreateWithRealProbeAsync();
+        var payload = scenario switch
+        {
+            "other_manufacturer" => SourcePreflightSyntheticFixture.OtherManufacturerExif(),
+            "evidence_conflict" => SourcePreflightSyntheticFixture.ConflictingManufacturerAndDjiXmp(),
+            "filename_spoof" => SourcePreflightSyntheticFixture.BareJpeg(),
+            "unreadable_metadata" => SourcePreflightSyntheticFixture.UnreadableExifAndDjiXmp(),
+            "input_limit" => SourcePreflightSyntheticFixture.DjiEvidenceExceedingInputLimit(
+                ImageProbeProtocol.MaximumPayloadBytes),
+            _ => throw new InvalidOperationException("Unknown synthetic preflight scenario.")
+        };
+        await scope.WriteSourceAsync("DJI_0001.JPG", payload);
+        var suffix = scenario.Replace('_', '-');
+        var sessionId = "session-real-" + suffix;
+        await scope.StartImportAsync("dataset-version-real-" + suffix, sessionId);
+
+        var queued = await scope.PreflightCoordinator.StartAsync(
+            "preflight-request-real-" + suffix,
+            new ImageImportPreflightStartParameters(sessionId));
+        await scope.PreflightCoordinator.WaitUntilIdleAsync().WaitAsync(TimeSpan.FromSeconds(30));
+
+        var completed = scope.PreflightCatalog.Get(
+            new ImageImportPreflightGetParameters(queued.PreflightRunId));
+        Assert.AreEqual(expectedDecision, completed.Decision);
+        Assert.AreEqual(expectedReason, completed.DecisionReasonCode);
+        scope.AssertNoFormalOutputs();
+        scope.AssertPreflightPersistenceIsPrivate();
+    }
+
+    [TestMethod]
+    public async Task RealProbeExactMrkCoverageSupportsBareImagesWithoutSavingTheSidecar()
+    {
+        await using var scope = await CoordinatorScope.CreateWithRealProbeAsync();
+        await scope.WriteSourceAsync("flight/IMG_0001.JPG", SourcePreflightSyntheticFixture.BareJpeg());
+        await scope.WriteSourceAsync("flight/mission.MRK", SourcePreflightSyntheticFixture.DjiMrk(1));
+        await scope.StartImportAsync("dataset-version-real-mrk", "session-real-mrk");
+
+        var queued = await scope.PreflightCoordinator.StartAsync(
+            "preflight-request-real-mrk",
+            new ImageImportPreflightStartParameters("session-real-mrk"));
+        await scope.PreflightCoordinator.WaitUntilIdleAsync().WaitAsync(TimeSpan.FromSeconds(20));
+        await scope.ImportCoordinator.WaitUntilIdleAsync().WaitAsync(TimeSpan.FromSeconds(20));
+
+        var completed = scope.PreflightCatalog.Get(
+            new ImageImportPreflightGetParameters(queued.PreflightRunId));
+        Assert.AreEqual("dji_supported", completed.Decision);
+        Assert.AreEqual(1L, scope.Scalar<long>("SELECT count(*) FROM file_objects WHERE object_kind='source_image';"));
+        Assert.AreEqual(0L, scope.Scalar<long>("SELECT count(*) FROM file_objects WHERE object_kind='positioning_aux';"));
+        var items = scope.PreflightCatalog.ListItems(
+            new ImageImportPreflightItemListParameters(queued.PreflightRunId, 50, null));
+        var image = items.Items.Single(item => item.CandidateKind == "image_candidate");
+        CollectionAssert.Contains(image.EvidenceKinds.ToList(), "dji_mrk_batch_coverage");
+        scope.AssertPreflightPersistenceIsPrivate();
+    }
+
+    [TestMethod]
+    public async Task RealProbeAmbiguousMrkAndGenericGnssEvidenceCannotReleaseTheBatch()
+    {
+        await using var scope = await CoordinatorScope.CreateWithRealProbeAsync();
+        await scope.WriteSourceAsync("flight/DJI_0001.JPG", SourcePreflightSyntheticFixture.BareJpeg());
+        await scope.WriteSourceAsync("flight/mission-a.MRK", SourcePreflightSyntheticFixture.DjiMrk(1));
+        await scope.WriteSourceAsync("flight/mission-b.MRK", SourcePreflightSyntheticFixture.DjiMrk(1));
+        await scope.WriteSourceAsync("flight/mission.OBS", SourcePreflightSyntheticFixture.Rinex());
+        await scope.WriteSourceAsync("flight/mission.RTK", SourcePreflightSyntheticFixture.Rtcm3());
+        await scope.StartImportAsync("dataset-version-real-weak-sidecars", "session-real-weak-sidecars");
+
+        var queued = await scope.PreflightCoordinator.StartAsync(
+            "preflight-request-real-weak-sidecars",
+            new ImageImportPreflightStartParameters("session-real-weak-sidecars"));
+        await scope.PreflightCoordinator.WaitUntilIdleAsync().WaitAsync(TimeSpan.FromSeconds(20));
+
+        var completed = scope.PreflightCatalog.Get(
+            new ImageImportPreflightGetParameters(queued.PreflightRunId));
+        Assert.AreEqual("unconfirmed", completed.Decision);
+        Assert.AreEqual("dji_evidence_incomplete", completed.DecisionReasonCode);
+        var items = scope.PreflightCatalog.ListItems(
+            new ImageImportPreflightItemListParameters(queued.PreflightRunId, 50, null));
+        Assert.IsTrue(items.Items.Any(item => item.EvidenceKinds.Contains("rinex_header", StringComparer.Ordinal)));
+        Assert.IsTrue(items.Items.Any(item => item.EvidenceKinds.Contains("rtcm3_frame_header", StringComparer.Ordinal)));
+        Assert.IsFalse(items.Items.Any(item => item.EvidenceKinds.Contains("dji_mrk_batch_coverage", StringComparer.Ordinal)));
+        scope.AssertNoFormalOutputs();
+        scope.AssertPreflightPersistenceIsPrivate();
+    }
+
+    [TestMethod]
+    public async Task OwnerPrivateManifestRunsFullSourcePreflightReadOnlyWithoutCopying()
+    {
+        var ownerRoot = Environment.GetEnvironmentVariable("QIONGTU_OWNER_SAMPLE");
+        var ownerManifest = Environment.GetEnvironmentVariable("QIONGTU_OWNER_SAMPLE_MANIFEST");
+        if (string.IsNullOrWhiteSpace(ownerRoot) || string.IsNullOrWhiteSpace(ownerManifest))
+        {
+            Assert.Inconclusive(
+                "The two owner-private source preflight bindings are not set; this gated acceptance runs locally under controller supervision.");
+        }
+
+        if (!Directory.Exists(ownerRoot) || !File.Exists(ownerManifest))
+        {
+            Assert.Fail("The owner-private source preflight bindings are unavailable.");
+        }
+
+        ValidatePrivateManifestGate(ownerManifest);
+        await using var scope = await CoordinatorScope.CreateForExternalSourceAsync(
+            Path.GetFullPath(ownerRoot));
+        await scope.StartImportAsync("dataset-version-owner-preflight", "session-owner-preflight");
+
+        var queued = await scope.PreflightCoordinator.StartAsync(
+            "preflight-request-owner-private",
+            new ImageImportPreflightStartParameters("session-owner-preflight"));
+        await scope.PreflightCoordinator.WaitUntilIdleAsync().WaitAsync(TimeSpan.FromMinutes(30));
+
+        var completed = scope.PreflightCatalog.Get(
+            new ImageImportPreflightGetParameters(queued.PreflightRunId));
+        if (completed.Decision != "dji_supported")
+        {
+            Assert.Fail("The owner-private source preflight did not satisfy the supported DJI evidence gate.");
+        }
+
+        Assert.AreEqual("ready", scope.ImportCatalog.Get(
+            new ImageImportGetParameters("session-owner-preflight")).Status);
+        await scope.AssertSourceSnapshotsRemainReadableAsync(
+            queued.PreflightRunId,
+            "session-owner-preflight");
+        scope.AssertNoFormalOutputs();
+        scope.AssertPreflightPersistenceIsPrivate();
+        var protectedLocatorText = await File.ReadAllTextAsync(
+            scope.SourceSecurity.GetRecoveryManifestPath("session-owner-preflight"));
+        Assert.DoesNotContain(ownerRoot, protectedLocatorText, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(":\\", protectedLocatorText, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public async Task RecoveryResetsRunningItemAndFinishesWithoutDuplicateRun()
     {
         await using var scope = await CoordinatorScope.CreateAsync(
@@ -175,7 +342,7 @@ public sealed class ImageImportPreflightCoordinatorTests
         Assert.AreEqual("unconfirmed", completed.Decision);
         Assert.AreEqual("source_evidence_read_failed", completed.DecisionReasonCode);
         Assert.AreEqual(1, completed.FailedItemCount);
-        Assert.AreEqual(0L, scope.Scalar<long>("SELECT count(*) FROM file_objects;"));
+        scope.AssertNoFormalOutputs();
     }
 
     [TestMethod]
@@ -229,12 +396,47 @@ public sealed class ImageImportPreflightCoordinatorTests
         new ImageProbeParserIdentity("qiongtu.source-preflight", "1.0.0", "2.9.3"),
         new ImageProbePrivacy(false, false, false, false, false, false, false, false));
 
+    private static void ValidatePrivateManifestGate(string manifestPath)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllBytes(manifestPath));
+            var root = document.RootElement;
+            if (!root.TryGetProperty("inventory_schema_version", out var schemaVersion) ||
+                string.IsNullOrWhiteSpace(schemaVersion.GetString()) ||
+                !root.TryGetProperty("source_id", out var sourceId) ||
+                string.IsNullOrWhiteSpace(sourceId.GetString()) ||
+                !root.TryGetProperty("source_policy", out var policy) ||
+                !policy.TryGetProperty("mode", out var mode) ||
+                mode.GetString() is not ("read-only" or "read_only") ||
+                !IsFalse(policy, "source_paths_emitted") ||
+                !IsFalse(policy, "file_names_emitted") ||
+                !IsFalse(policy, "absolute_coordinates_emitted") ||
+                !IsFalse(policy, "serial_numbers_emitted") ||
+                !IsFalse(policy, "capture_timestamps_emitted") ||
+                !policy.TryGetProperty("source_unchanged_during_scan", out var unchanged) ||
+                unchanged.ValueKind != JsonValueKind.True)
+            {
+                Assert.Fail("The owner-private manifest does not satisfy the read-only redacted gate.");
+            }
+        }
+        catch (JsonException)
+        {
+            Assert.Fail("The owner-private manifest could not be validated as a redacted JSON gate.");
+        }
+    }
+
+    private static bool IsFalse(JsonElement value, string propertyName) =>
+        value.TryGetProperty(propertyName, out var property) &&
+        property.ValueKind == JsonValueKind.False;
+
     private sealed class CoordinatorScope : IAsyncDisposable
     {
         private readonly string _root;
 
         private CoordinatorScope(
             string root,
+            string sourceRoot,
             ControlDataPaths paths,
             BusinessDatabase database,
             ImageImportCatalog importCatalog,
@@ -255,8 +457,7 @@ public sealed class ImageImportPreflightCoordinatorTests
             ObjectStore = objectStore;
             ImportCoordinator = importCoordinator;
             PreflightCoordinator = preflightCoordinator;
-            SourceRoot = Path.Combine(root, "source");
-            Directory.CreateDirectory(SourceRoot);
+            SourceRoot = sourceRoot;
         }
 
         public ControlDataPaths Paths { get; }
@@ -281,6 +482,31 @@ public sealed class ImageImportPreflightCoordinatorTests
 
         public static Task<CoordinatorScope> CreateAsync(
             Func<string, string?, int?, ImageProbeSourcePreflightResult> resultFactory)
+            => CreateAsync(new FakeProbeClient(resultFactory), enqueueApproved: true);
+
+        public static Task<CoordinatorScope> CreateWithRealProbeAsync(bool enqueueApproved = true) =>
+            CreateAsync(
+                new IsolatedImageSourcePreflightProbeClient(
+                    new ImageSourcePreflightProbeOptions(Timeout: TimeSpan.FromSeconds(15)),
+                    CreateDevelopmentProbeStartInfo),
+                enqueueApproved,
+                externalSourceRoot: null,
+                useProductionProtector: false);
+
+        public static Task<CoordinatorScope> CreateForExternalSourceAsync(string sourceRoot) =>
+            CreateAsync(
+                new IsolatedImageSourcePreflightProbeClient(
+                    new ImageSourcePreflightProbeOptions(Timeout: TimeSpan.FromSeconds(15)),
+                    CreateDevelopmentProbeStartInfo),
+                enqueueApproved: false,
+                externalSourceRoot: sourceRoot,
+                useProductionProtector: true);
+
+        private static Task<CoordinatorScope> CreateAsync(
+            IImageSourcePreflightProbeClient probeClient,
+            bool enqueueApproved,
+            string? externalSourceRoot = null,
+            bool useProductionProtector = false)
         {
             var root = Path.Combine(
                 Path.GetTempPath(),
@@ -291,9 +517,11 @@ public sealed class ImageImportPreflightCoordinatorTests
             database.Initialize();
             var importCatalog = new ImageImportCatalog(database);
             var preflightCatalog = new ImageImportPreflightCatalog(database);
-            var sourceSecurity = new ImageImportSourceSecurity(
-                Path.Combine(paths.StateDirectory, "image-import-locators"),
-                new PassthroughProtector());
+            var sourceSecurity = useProductionProtector
+                ? new ImageImportSourceSecurity(Path.Combine(paths.StateDirectory, "image-import-locators"))
+                : new ImageImportSourceSecurity(
+                    Path.Combine(paths.StateDirectory, "image-import-locators"),
+                    new PassthroughProtector());
             var sourceDiscovery = new ImageImportSourceDiscovery(sourceSecurity);
             var objectStore = new ContentAddressedObjectStore(paths.ObjectDirectory);
             var importCoordinator = new ImageImportCoordinator(
@@ -303,16 +531,26 @@ public sealed class ImageImportPreflightCoordinatorTests
                 objectStore);
             var probe = new ImageSourcePreflightProbe(
                 sourceDiscovery,
-                new FakeProbeClient(resultFactory));
+                probeClient);
+            Func<string, CancellationToken, Task> approvedEnqueuer = enqueueApproved
+                ? importCoordinator.EnqueueApprovedSessionAsync
+                : static (_, _) => Task.CompletedTask;
             var preflightCoordinator = new ImageImportPreflightCoordinator(
                 preflightCatalog,
                 sourceSecurity,
                 sourceDiscovery,
                 probe,
-                importCoordinator,
+                approvedEnqueuer,
                 paths);
+            var sourceRoot = externalSourceRoot ?? Path.Combine(root, "source");
+            if (externalSourceRoot is null)
+            {
+                Directory.CreateDirectory(sourceRoot);
+            }
+
             return Task.FromResult(new CoordinatorScope(
                 root,
+                sourceRoot,
                 paths,
                 database,
                 importCatalog,
@@ -329,6 +567,14 @@ public sealed class ImageImportPreflightCoordinatorTests
             var path = Path.Combine(SourceRoot, relativePath.Replace('/', Path.DirectorySeparatorChar));
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             await File.WriteAllTextAsync(path, content);
+            return path;
+        }
+
+        public async Task<string> WriteSourceAsync(string relativePath, byte[] content)
+        {
+            var path = Path.Combine(SourceRoot, relativePath.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            await File.WriteAllBytesAsync(path, content);
             return path;
         }
 
@@ -395,6 +641,97 @@ public sealed class ImageImportPreflightCoordinatorTests
                 );
                 """;
             return command.ExecuteScalar() as string ?? string.Empty;
+        }
+
+        public void AssertNoFormalOutputs()
+        {
+            Assert.AreEqual(0L, Scalar<long>("SELECT count(*) FROM file_objects;"));
+            Assert.AreEqual(0L, Scalar<long>("SELECT count(*) FROM images;"));
+            Assert.AreEqual(0L, Scalar<long>("SELECT count(*) FROM processing_jobs;"));
+            Assert.IsFalse(Directory.EnumerateFiles(
+                ObjectStore.PublishedDirectory,
+                "*",
+                SearchOption.AllDirectories).Any());
+        }
+
+        public void AssertPreflightPersistenceIsPrivate()
+        {
+            var persisted = PreflightPersistenceText();
+            Assert.DoesNotContain(SourceRoot, persisted, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(":\\", persisted, StringComparison.Ordinal);
+            Assert.DoesNotContain(SourcePreflightSyntheticFixture.PrivateDeviceMarker, persisted, StringComparison.Ordinal);
+            Assert.DoesNotContain(SourcePreflightSyntheticFixture.PrivateCoordinateMarker, persisted, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"pathsIncluded\":true", persisted, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("\"rawMetadataIncluded\":true", persisted, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("\"coordinatesIncluded\":true", persisted, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("\"hashesIncluded\":true", persisted, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("\"objectKeysIncluded\":true", persisted, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("\"ownerSampleStatisticsIncluded\":true", persisted, StringComparison.OrdinalIgnoreCase);
+        }
+
+        public async Task AssertSourceSnapshotsRemainReadableAsync(string runId, string sessionId)
+        {
+            var manifest = await SourceSecurity.LoadRecoveryManifestAsync(sessionId);
+            var items = PreflightCatalog.ListWorkItems(runId, includeCompleted: true);
+            foreach (var item in items)
+            {
+                if (manifest.SnapshotBySourceItemKey is null ||
+                    !manifest.SnapshotBySourceItemKey.TryGetValue(item.SourceEntryKey, out var snapshot))
+                {
+                    Assert.Fail("The owner-private source snapshot could not be revalidated.");
+                    return;
+                }
+
+                await SourceDiscovery.ReadSourceItemAsync(
+                    manifest,
+                    item.SourceEntryKey,
+                    snapshot,
+                    static async (stream, cancellationToken) =>
+                    {
+                        var buffer = new byte[1];
+                        _ = await stream.ReadAsync(buffer, cancellationToken);
+                        return true;
+                    },
+                    CancellationToken.None);
+            }
+        }
+
+        private static ProcessStartInfo CreateDevelopmentProbeStartInfo()
+        {
+            var executablePath = Path.Combine(
+                FindRepositoryRoot(),
+                "services",
+                "image-probe",
+                "src",
+                "QiongTu.ImageProbe",
+                "bin",
+#if DEBUG
+                "Debug",
+#else
+                "Release",
+#endif
+                "net10.0",
+                "win-x64",
+                "QiongTu.ImageProbe.exe");
+            var startInfo = new ProcessStartInfo { FileName = executablePath };
+            startInfo.ArgumentList.Add(ImageProbeProtocol.StdioArgument);
+            return startInfo;
+        }
+
+        private static string FindRepositoryRoot()
+        {
+            var directory = new DirectoryInfo(AppContext.BaseDirectory);
+            while (directory is not null)
+            {
+                if (File.Exists(Path.Combine(directory.FullName, "Directory.Build.props")))
+                {
+                    return directory.FullName;
+                }
+
+                directory = directory.Parent;
+            }
+
+            throw new DirectoryNotFoundException("The repository root could not be located for the image probe test.");
         }
 
         public async ValueTask DisposeAsync()

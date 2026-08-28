@@ -68,8 +68,11 @@ internal sealed class IsolatedImageSourcePreflightProbeClient : IImageSourcePref
             throw new ArgumentException("The image source must be readable.", nameof(source));
         }
 
-        var payload = await ReadBoundedPrefixAsync(source, _options.MaximumPayloadBytes, cancellationToken);
-        if (payload.Length == 0)
+        var boundedInput = await ReadBoundedPrefixAsync(
+            source,
+            _options.MaximumPayloadBytes,
+            cancellationToken);
+        if (boundedInput.Payload.Length == 0)
         {
             throw new ImageSourcePreflightProbeException(
                 "image_probe_empty_input",
@@ -82,7 +85,7 @@ internal sealed class IsolatedImageSourcePreflightProbeClient : IImageSourcePref
             candidateKind,
             formatHint,
             associationItemCount,
-            payload.Length);
+            boundedInput.Payload.Length);
         var headerBytes = JsonSerializer.SerializeToUtf8Bytes(header, SerializerOptions);
         if (headerBytes.Length == 0 || headerBytes.Length > ImageProbeProtocol.MaximumHeaderBytes)
         {
@@ -131,7 +134,7 @@ internal sealed class IsolatedImageSourcePreflightProbeClient : IImageSourcePref
         {
             await process.StandardInput.BaseStream.WriteAsync(headerBytes, timeout.Token);
             await process.StandardInput.BaseStream.WriteAsync(new byte[] { (byte)'\n' }, timeout.Token);
-            await process.StandardInput.BaseStream.WriteAsync(payload, timeout.Token);
+            await process.StandardInput.BaseStream.WriteAsync(boundedInput.Payload, timeout.Token);
             await process.StandardInput.BaseStream.FlushAsync(timeout.Token);
             process.StandardInput.Close();
             await process.WaitForExitAsync(timeout.Token);
@@ -203,7 +206,9 @@ internal sealed class IsolatedImageSourcePreflightProbeClient : IImageSourcePref
         }
 
         ValidateResult(result, candidateKind);
-        return result;
+        return boundedInput.LimitExceeded
+            ? ApplyInputLimit(result)
+            : result;
     }
 
     internal static ProcessStartInfo CreateProductStartInfo()
@@ -245,7 +250,7 @@ internal sealed class IsolatedImageSourcePreflightProbeClient : IImageSourcePref
         return startInfo;
     }
 
-    private static async Task<byte[]> ReadBoundedPrefixAsync(
+    private static async Task<BoundedProbeInput> ReadBoundedPrefixAsync(
         Stream source,
         int maximumBytes,
         CancellationToken cancellationToken)
@@ -268,12 +273,28 @@ internal sealed class IsolatedImageSourcePreflightProbeClient : IImageSourcePref
                 await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
             }
 
-            return output.ToArray();
+            var limitExceeded = output.Length == maximumBytes &&
+                                await source.ReadAsync(buffer.AsMemory(0, 1), cancellationToken) != 0;
+            return new BoundedProbeInput(output.ToArray(), limitExceeded);
         }
         finally
         {
             ArrayPool<byte>.Shared.Return(buffer);
         }
+    }
+
+    private static ImageProbeSourcePreflightResult ApplyInputLimit(
+        ImageProbeSourcePreflightResult result)
+    {
+        var reasons = result.ReasonCodes
+            .Append("evidence_read_limit_exceeded")
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(value => value, StringComparer.Ordinal)
+            .Take(ImageProbeProtocol.MaximumReasonCodes)
+            .ToArray();
+        return result.EvidenceState == "supports_dji"
+            ? result with { EvidenceState = "unconfirmed", ReasonCodes = reasons }
+            : result with { ReasonCodes = reasons };
     }
 
     private static async Task<byte[]> ReadBoundedAsync(
@@ -332,6 +353,8 @@ internal sealed class IsolatedImageSourcePreflightProbeClient : IImageSourcePref
 
     private static bool IsExpectedMetadataExtractorVersion(string version) =>
         version == "2.9.3" || version.StartsWith("2.9.3+", StringComparison.Ordinal);
+
+    private sealed record BoundedProbeInput(byte[] Payload, bool LimitExceeded);
 
     private static async Task<byte[]> AwaitBoundedAfterChildExitAsync(Task<byte[]> task)
     {

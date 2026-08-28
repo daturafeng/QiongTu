@@ -53,7 +53,7 @@ public sealed class ControlApplication
             imageImportSourceSecurity,
             imageImportSourceDiscovery,
             imageSourcePreflightProbe,
-            imageImportCoordinator,
+            imageImportCoordinator.EnqueueApprovedSessionAsync,
             _paths);
         await imageImportPreflightCoordinator.RecoverAsync(cancellationToken);
         await imageImportCoordinator.RecoverAsync(cancellationToken);

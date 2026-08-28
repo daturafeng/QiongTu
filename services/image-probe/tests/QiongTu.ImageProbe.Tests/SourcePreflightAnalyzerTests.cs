@@ -60,6 +60,21 @@ public sealed class SourcePreflightAnalyzerTests
     }
 
     [TestMethod]
+    public void Analyze_UnreadableExifWithDjiXmp_RemainsUnconfirmed()
+    {
+        var payload = SyntheticJpeg.WithSegments(
+            SyntheticJpeg.MalformedExifSegment(),
+            SyntheticJpeg.XmpSegment());
+
+        var result = SourcePreflightAnalyzer.Analyze(Header(payload.Length), payload);
+
+        Assert.AreEqual("unconfirmed", result.EvidenceState);
+        CollectionAssert.Contains(result.EvidenceKinds.ToArray(), "dji_xmp_namespace");
+        CollectionAssert.Contains(result.ReasonCodes.ToArray(), "metadata_unreadable_or_truncated");
+        AssertPrivacy(result);
+    }
+
+    [TestMethod]
     public void Analyze_FilenameIsNotPartOfProtocolAndCannotPass()
     {
         var payload = new byte[] { 0xff, 0xd8, 0xff, 0xd9 };
@@ -100,6 +115,19 @@ public sealed class SourcePreflightAnalyzerTests
     }
 
     [TestMethod]
+    public void Analyze_RtcmSidecarRemainsManufacturerUnconfirmed()
+    {
+        var payload = new byte[] { 0xd3, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00 };
+        var header = Header(payload.Length, "positioning_aux_candidate", "rtk");
+
+        var result = SourcePreflightAnalyzer.Analyze(header, payload);
+
+        Assert.AreEqual("unconfirmed", result.EvidenceState);
+        CollectionAssert.Contains(result.EvidenceKinds.ToArray(), "rtcm3_frame_header");
+        CollectionAssert.Contains(result.ReasonCodes.ToArray(), "sidecar_not_manufacturer_specific");
+    }
+
+    [TestMethod]
     public void Analyze_ArbitraryDjiTextIsNotManufacturerEvidence()
     {
         var payload = Encoding.UTF8.GetBytes("DJI D-RTK generic text without the documented MRK layout\r\n");
@@ -116,6 +144,19 @@ public sealed class SourcePreflightAnalyzerTests
     {
         var payload = Encoding.UTF8.GetBytes(
             "1\t12345.123456\t[2200]\t1,N\t-2,E\t3,V\t30.12345678,Lat\t120.12345678,Lon\t100.123,Ellh\t0.001000,\t0.001000,\t0.002000\t50,Q\r\n");
+        var header = Header(payload.Length, "positioning_aux_candidate", "mrk", associationItemCount: 2);
+
+        var result = SourcePreflightAnalyzer.Analyze(header, payload);
+
+        Assert.AreEqual("unconfirmed", result.EvidenceState);
+        CollectionAssert.Contains(result.ReasonCodes.ToArray(), "sidecar_batch_coverage_mismatch");
+    }
+
+    [TestMethod]
+    public void Analyze_DjiMrkWithDuplicateSequenceRemainsUnconfirmed()
+    {
+        var line = "1\t12345.123456\t[2200]\t1,N\t-2,E\t3,V\t30.12345678,Lat\t120.12345678,Lon\t100.123,Ellh\t0.001000,\t0.001000,\t0.002000\t50,Q\r\n";
+        var payload = Encoding.UTF8.GetBytes(line + line);
         var header = Header(payload.Length, "positioning_aux_candidate", "mrk", associationItemCount: 2);
 
         var result = SourcePreflightAnalyzer.Analyze(header, payload);
@@ -206,6 +247,11 @@ internal static class SyntheticJpeg
             "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description xmlns:drone-dji=\"http://www.dji.com/drone-dji/1.0/\" drone-dji:GimbalYawDegree=\"1\"/></rdf:RDF></x:xmpmeta>");
         return AppSegment(0xe1, Combine(identifier, xml));
     }
+
+    public static byte[] MalformedExifSegment() =>
+        AppSegment(0xe1, Combine(
+            "Exif\0\0"u8.ToArray(),
+            new byte[] { (byte)'I', (byte)'I', 42, 0, 0xff, 0xff, 0xff, 0x7f }));
 
     public static byte[] App2MpfSegment() =>
         AppSegment(0xe2, "MPF\0II*\0"u8.ToArray());

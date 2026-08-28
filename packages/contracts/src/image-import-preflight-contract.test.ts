@@ -3,7 +3,9 @@ import {
   CONTROL_METHOD_IMAGE_IMPORT_PREFLIGHT_GET,
   CONTROL_METHOD_IMAGE_IMPORT_PREFLIGHT_ITEM_LIST,
   CONTROL_METHOD_IMAGE_IMPORT_PREFLIGHT_START,
+  isImageImportPreflightGetParameters,
   isImageImportPreflightItem,
+  isImageImportPreflightItemListParameters,
   isImageImportPreflightRun,
   isImageImportPreflightStartParameters,
   isPageResult,
@@ -92,6 +94,23 @@ describe("image import preflight contract", () => {
     expect(isImageImportPreflightStartParameters({
       importSessionId: run.importSessionId,
       sourceRootPath: "D:\\private"
+    })).toBe(false);
+  });
+
+  it("validates bounded get and item-list parameters", () => {
+    expect(isImageImportPreflightGetParameters({ preflightRunId: run.preflightRunId })).toBe(true);
+    expect(isImageImportPreflightItemListParameters({
+      preflightRunId: run.preflightRunId,
+      pageSize: 50,
+      cursor: "opaque"
+    })).toBe(true);
+    expect(isImageImportPreflightItemListParameters({
+      preflightRunId: run.preflightRunId,
+      pageSize: 51
+    })).toBe(false);
+    expect(isImageImportPreflightGetParameters({
+      preflightRunId: run.preflightRunId,
+      sourceEntryKey: "a".repeat(64)
     })).toBe(false);
   });
 

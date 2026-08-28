@@ -129,6 +129,88 @@ public sealed class ImageImportControlIntegrationTests
     }
 
     [TestMethod]
+    public async Task SourcePreflightMethodsRunToCompletionThroughTheRealPipe()
+    {
+        await using var scope = await ImageImportPipeScope.StartAsync();
+        scope.SeedProjectDatasetVersion("dataset-version-preflight", "pending");
+        var sourceRoot = scope.CreateSourceRoot("source-preflight");
+        await File.WriteAllTextAsync(Path.Combine(sourceRoot, "DJI_0001.JPG"), "synthetic-one");
+        await File.WriteAllTextAsync(Path.Combine(sourceRoot, "DJI_0002.JPG"), "synthetic-two");
+        await File.WriteAllTextAsync(Path.Combine(sourceRoot, "DJI_0003.JPG"), "synthetic-three");
+
+        using var importResponse = await scope.SendAsync(
+            ControlMethods.ImageImportStart,
+            "image-import-preflight-source",
+            new { datasetVersionId = "dataset-version-preflight", sourceRootPath = sourceRoot });
+        var sessionId = Ok(importResponse).GetProperty("result").GetProperty("importSessionId").GetString()!;
+
+        var startParameters = new { importSessionId = sessionId };
+        using var startedResponse = await scope.SendAsync(
+            ControlMethods.ImageImportPreflightStart,
+            "source-preflight-start",
+            startParameters);
+        using var replayResponse = await scope.SendAsync(
+            ControlMethods.ImageImportPreflightStart,
+            "source-preflight-start",
+            startParameters);
+        var started = Ok(startedResponse).GetProperty("result");
+        var runId = started.GetProperty("preflightRunId").GetString()!;
+        Assert.AreEqual(
+            runId,
+            Ok(replayResponse).GetProperty("result").GetProperty("preflightRunId").GetString());
+
+        using var conflict = await scope.SendAsync(
+            ControlMethods.ImageImportPreflightStart,
+            "source-preflight-start",
+            new { importSessionId = "different-session" });
+        Error(conflict, "idempotency_conflict");
+
+        await scope.WaitForPreflightStatusAsync(runId, "completed");
+        await scope.WaitForSessionStatusAsync(sessionId, "completed");
+
+        using var getResponse = await scope.SendAsync(
+            ControlMethods.ImageImportPreflightGet,
+            "source-preflight-get",
+            new { preflightRunId = runId });
+        var run = Ok(getResponse).GetProperty("result");
+        Assert.AreEqual("dji_supported", run.GetProperty("decision").GetString());
+        Assert.AreEqual(3, run.GetProperty("imageCandidateCount").GetInt32());
+
+        using var firstPageResponse = await scope.SendAsync(
+            ControlMethods.ImageImportPreflightItemList,
+            "source-preflight-list-1",
+            new { preflightRunId = runId, pageSize = 2, cursor = (string?)null });
+        var firstPage = Ok(firstPageResponse).GetProperty("result");
+        Assert.AreEqual(2, firstPage.GetProperty("items").GetArrayLength());
+        var cursor = firstPage.GetProperty("nextCursor").GetString();
+        Assert.IsFalse(string.IsNullOrWhiteSpace(cursor));
+        using var secondPageResponse = await scope.SendAsync(
+            ControlMethods.ImageImportPreflightItemList,
+            "source-preflight-list-2",
+            new { preflightRunId = runId, pageSize = 2, cursor });
+        Assert.AreEqual(
+            1,
+            Ok(secondPageResponse).GetProperty("result").GetProperty("items").GetArrayLength());
+
+        using var invalidPage = await scope.SendAsync(
+            ControlMethods.ImageImportPreflightItemList,
+            "source-preflight-list-invalid",
+            new { preflightRunId = runId, pageSize = 51, cursor = (string?)null });
+        Error(invalidPage, "invalid_page_size");
+
+        foreach (var response in new[] { getResponse, firstPageResponse, secondPageResponse })
+        {
+            var raw = response.RootElement.GetRawText();
+            Assert.DoesNotContain(sourceRoot, raw, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("\"sourceEntryKey\":", raw, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("\"contentHash\":", raw, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("\"rawMetadata\":", raw, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("\"serialNumber\":", raw, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("\"latitude\":", raw, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [TestMethod]
     public async Task StopIfIdleRejectsWhileImageImportIsQueuedOrActive()
     {
         await using var scope = await ImageImportPipeScope.StartAsync();
@@ -161,6 +243,38 @@ public sealed class ImageImportControlIntegrationTests
         Assert.AreEqual("cancelled", Ok(cancelResponse).GetProperty("result").GetProperty("status").GetString());
     }
 
+    [TestMethod]
+    public async Task StopIfIdleRejectsWhileSourcePreflightIsActive()
+    {
+        var blockingProbe = new BlockingPreflightProbeClient();
+        await using var scope = await ImageImportPipeScope.StartAsync(blockingProbe);
+        scope.SeedProjectDatasetVersion("dataset-version-preflight-busy", "pending");
+        var sourceRoot = scope.CreateSourceRoot("source-preflight-busy");
+        await File.WriteAllTextAsync(Path.Combine(sourceRoot, "DJI_0001.JPG"), "synthetic-busy");
+        using var importResponse = await scope.SendAsync(
+            ControlMethods.ImageImportStart,
+            "image-import-preflight-busy",
+            new { datasetVersionId = "dataset-version-preflight-busy", sourceRootPath = sourceRoot });
+        var sessionId = Ok(importResponse).GetProperty("result").GetProperty("importSessionId").GetString()!;
+        using var startResponse = await scope.SendAsync(
+            ControlMethods.ImageImportPreflightStart,
+            "source-preflight-busy",
+            new { importSessionId = sessionId });
+        _ = Ok(startResponse);
+        await blockingProbe.Entered.WaitAsync(TimeSpan.FromSeconds(10));
+
+        using var stopResponse = await scope.SendAsync(
+            ControlMethods.StopIfIdle,
+            "stop-while-preflight-active",
+            new { });
+        Error(stopResponse, "control_busy");
+
+        blockingProbe.Release();
+        await scope.WaitForPreflightStatusAsync(
+            Ok(startResponse).GetProperty("result").GetProperty("preflightRunId").GetString()!,
+            "completed");
+    }
+
     private static JsonElement Ok(JsonDocument document)
     {
         Assert.IsTrue(document.RootElement.GetProperty("ok").GetBoolean(), document.RootElement.GetRawText());
@@ -190,6 +304,7 @@ public sealed class ImageImportControlIntegrationTests
         private readonly NamedPipeControlServer _server;
         private readonly BusinessDatabase _database;
         private readonly ImageImportCoordinator _imageImports;
+        private readonly ImageImportPreflightCoordinator _imageImportPreflights;
 
         private ImageImportPipeScope(
             string root,
@@ -198,7 +313,8 @@ public sealed class ImageImportControlIntegrationTests
             WorkerSupervisor workers,
             ArtifactServer artifactServer,
             NamedPipeControlServer server,
-            ImageImportCoordinator imageImports)
+            ImageImportCoordinator imageImports,
+            ImageImportPreflightCoordinator imageImportPreflights)
         {
             _root = root;
             PipeName = pipeName;
@@ -207,11 +323,13 @@ public sealed class ImageImportControlIntegrationTests
             _artifactServer = artifactServer;
             _server = server;
             _imageImports = imageImports;
+            _imageImportPreflights = imageImportPreflights;
         }
 
         private string PipeName { get; }
 
-        public static async Task<ImageImportPipeScope> StartAsync()
+        public static async Task<ImageImportPipeScope> StartAsync(
+            IImageSourcePreflightProbeClient? preflightProbeClient = null)
         {
             var root = Path.Combine(Path.GetTempPath(), $"qiongtu-image-import-pipe-tests-{Guid.NewGuid():N}");
             Directory.CreateDirectory(root);
@@ -233,6 +351,16 @@ public sealed class ImageImportControlIntegrationTests
                 sourceSecurity,
                 sourceDiscovery,
                 objectStore);
+            var imageImportPreflightCatalog = new ImageImportPreflightCatalog(database);
+            var imageImportPreflights = new ImageImportPreflightCoordinator(
+                imageImportPreflightCatalog,
+                sourceSecurity,
+                sourceDiscovery,
+                new ImageSourcePreflightProbe(
+                    sourceDiscovery,
+                    preflightProbeClient ?? new PipePreflightProbeClient()),
+                imageImports,
+                paths);
 
             var registry = new WorkerRegistry();
             var capabilities = new ProcessingCapabilityService(registry, paths);
@@ -252,10 +380,20 @@ public sealed class ImageImportControlIntegrationTests
                 requestStop: () => { },
                 imageImports,
                 imageImportCatalog,
-                paths);
+                paths,
+                imageImportPreflights,
+                imageImportPreflightCatalog);
             var server = new NamedPipeControlServer(pipeName, dispatcher);
             server.Start();
-            return new ImageImportPipeScope(root, pipeName, database, workers, artifactServer, server, imageImports);
+            return new ImageImportPipeScope(
+                root,
+                pipeName,
+                database,
+                workers,
+                artifactServer,
+                server,
+                imageImports,
+                imageImportPreflights);
         }
 
         public string CreateSourceRoot(string name)
@@ -284,6 +422,27 @@ public sealed class ImageImportControlIntegrationTests
             }
 
             Assert.Fail($"Image import session {importSessionId} did not reach {status}.");
+        }
+
+        public async Task WaitForPreflightStatusAsync(string preflightRunId, string status)
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            while (!timeout.IsCancellationRequested)
+            {
+                using var response = await SendAsync(
+                    ControlMethods.ImageImportPreflightGet,
+                    "source-preflight-poll-" + Guid.NewGuid().ToString("N"),
+                    new { preflightRunId });
+                var result = Ok(response).GetProperty("result");
+                if (string.Equals(result.GetProperty("status").GetString(), status, StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                await Task.Delay(25, timeout.Token);
+            }
+
+            Assert.Fail($"Source preflight run {preflightRunId} did not reach {status}.");
         }
 
         public void SeedProjectDatasetVersion(string datasetVersionId, string sourceEligibilityState)
@@ -331,11 +490,69 @@ public sealed class ImageImportControlIntegrationTests
         public async ValueTask DisposeAsync()
         {
             await _server.DisposeAsync();
+            await _imageImportPreflights.DisposeAsync();
             await _imageImports.DisposeAsync();
             await _artifactServer.DisposeAsync();
             _workers.Dispose();
             SqliteConnection.ClearAllPools();
             Directory.Delete(_root, recursive: true);
+        }
+    }
+
+    private sealed class PipePreflightProbeClient : IImageSourcePreflightProbeClient
+    {
+        public async Task<ImageProbeSourcePreflightResult> AnalyzeAsync(
+            Stream source,
+            string candidateKind,
+            string? formatHint,
+            int? associationItemCount,
+            CancellationToken cancellationToken)
+        {
+            var buffer = new byte[64];
+            _ = await source.ReadAsync(buffer, cancellationToken);
+            return new ImageProbeSourcePreflightResult(
+                ImageProbeProtocol.SourcePreflightV1,
+                ImageProbeProtocol.SourcePreflightProfile,
+                "completed",
+                candidateKind,
+                candidateKind == "image_candidate" ? "jpeg_hint" : "not_image",
+                candidateKind == "image_candidate" ? "supports_dji" : "unconfirmed",
+                candidateKind == "image_candidate" ? ["dji_exif_manufacturer"] : [],
+                candidateKind == "image_candidate" ? [] : ["generic_positioning_evidence_only"],
+                new ImageProbeParserIdentity("qiongtu.source-preflight", "1.0.0", "2.9.3"),
+                new ImageProbePrivacy(false, false, false, false, false, false, false, false));
+        }
+    }
+
+    private sealed class BlockingPreflightProbeClient : IImageSourcePreflightProbeClient
+    {
+        private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _released = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task Entered => _entered.Task;
+
+        public void Release() => _released.TrySetResult();
+
+        public async Task<ImageProbeSourcePreflightResult> AnalyzeAsync(
+            Stream source,
+            string candidateKind,
+            string? formatHint,
+            int? associationItemCount,
+            CancellationToken cancellationToken)
+        {
+            _entered.TrySetResult();
+            await _released.Task.WaitAsync(cancellationToken);
+            return new ImageProbeSourcePreflightResult(
+                ImageProbeProtocol.SourcePreflightV1,
+                ImageProbeProtocol.SourcePreflightProfile,
+                "completed",
+                candidateKind,
+                candidateKind == "image_candidate" ? "jpeg_hint" : "not_image",
+                "supports_dji",
+                ["dji_exif_manufacturer"],
+                [],
+                new ImageProbeParserIdentity("qiongtu.source-preflight", "1.0.0", "2.9.3"),
+                new ImageProbePrivacy(false, false, false, false, false, false, false, false));
         }
     }
 

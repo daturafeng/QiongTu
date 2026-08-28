@@ -23,6 +23,8 @@ public sealed class ControlRequestDispatcher
     private readonly ImageImportCoordinator? _imageImports;
     private readonly ImageImportCatalog? _imageImportCatalog;
     private readonly ControlDataPaths? _controlDataPaths;
+    private readonly ImageImportPreflightCoordinator? _imageImportPreflights;
+    private readonly ImageImportPreflightCatalog? _imageImportPreflightCatalog;
 
     internal ControlRequestDispatcher(
         string pipeName,
@@ -34,7 +36,9 @@ public sealed class ControlRequestDispatcher
         Action requestStop,
         ImageImportCoordinator? imageImports = null,
         ImageImportCatalog? imageImportCatalog = null,
-        ControlDataPaths? controlDataPaths = null)
+        ControlDataPaths? controlDataPaths = null,
+        ImageImportPreflightCoordinator? imageImportPreflights = null,
+        ImageImportPreflightCatalog? imageImportPreflightCatalog = null)
     {
         _pipeName = pipeName;
         _startedAtUtc = startedAtUtc;
@@ -46,6 +50,8 @@ public sealed class ControlRequestDispatcher
         _imageImports = imageImports;
         _imageImportCatalog = imageImportCatalog;
         _controlDataPaths = controlDataPaths;
+        _imageImportPreflights = imageImportPreflights;
+        _imageImportPreflightCatalog = imageImportPreflightCatalog;
     }
 
     public async Task<ControlResponse> DispatchAsync(ControlRequest request, CancellationToken cancellationToken)
@@ -106,6 +112,13 @@ public sealed class ControlRequestDispatcher
                     ReadOptionalParameters(request, new ImageImportListParameters(null, null, null))),
                 ControlMethods.ImageImportEntryList => RequireImageImportCatalog().ListEntries(
                     ReadParameters<ImageImportEntryListParameters>(request)),
+                ControlMethods.ImageImportPreflightStart => await StartImageImportPreflightAsync(
+                    request,
+                    cancellationToken),
+                ControlMethods.ImageImportPreflightGet => RequireImageImportPreflightCatalog().Get(
+                    ReadParameters<ImageImportPreflightGetParameters>(request)),
+                ControlMethods.ImageImportPreflightItemList => RequireImageImportPreflightCatalog().ListItems(
+                    ReadParameters<ImageImportPreflightItemListParameters>(request)),
                 _ => throw new ControlProtocolException("method_not_found", "The requested control method is not available.")
             };
             return new ControlResponse(
@@ -128,6 +141,10 @@ public sealed class ControlRequestDispatcher
             return Failure(request, exception.Code, exception.Message);
         }
         catch (ImageImportSourceSecurityException exception)
+        {
+            return Failure(request, exception.Code, exception.Message);
+        }
+        catch (ImageSourcePreflightProbeException exception)
         {
             return Failure(request, exception.Code, exception.Message);
         }
@@ -238,6 +255,16 @@ public sealed class ControlRequestDispatcher
         return RequireImageImportCoordinator().Cancel(request.RequestId, parameters.ImportSessionId);
     }
 
+    private async Task<ImageImportPreflightRun> StartImageImportPreflightAsync(
+        ControlRequest request,
+        CancellationToken cancellationToken)
+    {
+        return await RequireImageImportPreflightCoordinator().StartAsync(
+            request.RequestId,
+            ReadParameters<ImageImportPreflightStartParameters>(request),
+            cancellationToken);
+    }
+
     private ImageImportCoordinator RequireImageImportCoordinator() =>
         _imageImports ?? throw new ControlProtocolException(
             "image_import_unavailable",
@@ -248,6 +275,16 @@ public sealed class ControlRequestDispatcher
             "image_import_unavailable",
             "Image import is not configured for this control process.");
 
+    private ImageImportPreflightCoordinator RequireImageImportPreflightCoordinator() =>
+        _imageImportPreflights ?? throw new ControlProtocolException(
+            "image_import_preflight_unavailable",
+            "Image import source preflight is not configured for this control process.");
+
+    private ImageImportPreflightCatalog RequireImageImportPreflightCatalog() =>
+        _imageImportPreflightCatalog ?? throw new ControlProtocolException(
+            "image_import_preflight_unavailable",
+            "Image import source preflight is not configured for this control process.");
+
     private static string CreateImportSessionId(string requestId)
     {
         var digest = SHA256.HashData(Encoding.UTF8.GetBytes(requestId));
@@ -256,7 +293,9 @@ public sealed class ControlRequestDispatcher
 
     private object StopIfIdle()
     {
-        if (_workers.ActiveCount != 0 || (_imageImports is not null && !_imageImports.IsIdle))
+        if (_workers.ActiveCount != 0 ||
+            (_imageImports is not null && !_imageImports.IsIdle) ||
+            (_imageImportPreflights is not null && !_imageImportPreflights.IsIdle))
         {
             throw new ControlProtocolException("control_busy", "The control process still owns active workers.");
         }

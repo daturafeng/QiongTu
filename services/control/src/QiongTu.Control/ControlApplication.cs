@@ -46,6 +46,16 @@ public sealed class ControlApplication
             imageImportSourceSecurity,
             imageImportSourceDiscovery,
             objectStore);
+        var imageImportPreflightCatalog = new ImageImportPreflightCatalog(businessDatabase);
+        var imageSourcePreflightProbe = new ImageSourcePreflightProbe(imageImportSourceDiscovery);
+        await using var imageImportPreflightCoordinator = new ImageImportPreflightCoordinator(
+            imageImportPreflightCatalog,
+            imageImportSourceSecurity,
+            imageImportSourceDiscovery,
+            imageSourcePreflightProbe,
+            imageImportCoordinator,
+            _paths);
+        await imageImportPreflightCoordinator.RecoverAsync(cancellationToken);
         await imageImportCoordinator.RecoverAsync(cancellationToken);
 
         var roots = new ArtifactRootRegistry();
@@ -67,7 +77,9 @@ public sealed class ControlApplication
             internalShutdown.Cancel,
             imageImportCoordinator,
             imageImportCatalog,
-            _paths);
+            _paths,
+            imageImportPreflightCoordinator,
+            imageImportPreflightCatalog);
         await using var pipeServer = new NamedPipeControlServer(pipeName, dispatcher);
         pipeServer.Start();
 

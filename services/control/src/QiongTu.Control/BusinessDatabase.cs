@@ -6,7 +6,7 @@ namespace QiongTu.Control;
 
 public sealed class BusinessDatabase
 {
-    public const int CurrentSchemaVersion = 5;
+    public const int CurrentSchemaVersion = 6;
 
     private const string MigrationResourceSegment = ".Migrations.Business.";
     private readonly string _connectionString;

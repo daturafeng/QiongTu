@@ -244,6 +244,49 @@ public sealed class ImageImportPreflightCatalog
             reader.GetString(5));
     }
 
+    internal ImageImportPreflightRun RefreshInterruptedSourceBinding(string runId)
+    {
+        runId = NormalizeId(runId, nameof(runId));
+        using var connection = _database.OpenConnection();
+        using var transaction = connection.BeginTransaction(deferred: false);
+        var current = ReadRunPrivate(connection, transaction, runId);
+        if (current.Status != "interrupted")
+        {
+            var unchanged = ReadRun(connection, transaction, runId);
+            transaction.Commit();
+            return unchanged;
+        }
+
+        var now = UtcNowText();
+        using var update = Command(
+            connection,
+            transaction,
+            """
+            UPDATE source_preflight_runs
+            SET source_root_key_snapshot = (
+                    SELECT source_root_key FROM image_import_sessions
+                    WHERE import_session_id = $import_session_id),
+                source_locator_manifest_id_snapshot = (
+                    SELECT source_locator_manifest_id FROM image_import_sessions
+                    WHERE import_session_id = $import_session_id),
+                updated_at_utc = $now
+            WHERE source_preflight_run_id = $run_id AND status = 'interrupted';
+            """);
+        Add(update, "$import_session_id", current.ImportSessionId);
+        Add(update, "$now", now);
+        Add(update, "$run_id", runId);
+        if (update.ExecuteNonQuery() != 1)
+        {
+            throw new BusinessCatalogException(
+                "image_import_preflight_source_rebind_failed",
+                "The interrupted source preflight run could not adopt the verified source binding.");
+        }
+
+        var response = ReadRun(connection, transaction, runId);
+        transaction.Commit();
+        return response;
+    }
+
     internal ImageImportPreflightRun AddSidecarItems(
         string runId,
         IEnumerable<SourcePreflightSidecarCandidate> candidates)
@@ -257,10 +300,11 @@ public sealed class ImageImportPreflightCatalog
         using var connection = _database.OpenConnection();
         using var transaction = connection.BeginTransaction(deferred: false);
         var binding = ReadRunPrivate(connection, transaction, runId);
-        if (binding.Status is not ("queued" or "running" or "interrupted"))
+        if (binding.Status is not ("queued" or "running"))
         {
-            transaction.Commit();
-            return ReadRun(connection, null, runId);
+            throw new BusinessCatalogException(
+                "image_import_preflight_not_writable",
+                "The image import source preflight run cannot accept sidecar candidates in its current state.");
         }
 
         var existingKeys = new HashSet<string>(StringComparer.Ordinal);
@@ -320,8 +364,9 @@ public sealed class ImageImportPreflightCatalog
         var current = ReadRunPrivate(connection, transaction, runId);
         if (current.Status == "running")
         {
+            var response = ReadRun(connection, transaction, runId);
             transaction.Commit();
-            return ReadRun(connection, null, runId);
+            return response;
         }
 
         if (current.Status is not ("queued" or "interrupted"))
@@ -423,11 +468,11 @@ public sealed class ImageImportPreflightCatalog
     {
         itemId = NormalizeId(itemId, nameof(itemId));
         ArgumentNullException.ThrowIfNull(result);
-        ValidateProbeResult(result);
         var evidenceJson = SerializeEvidence(result.EvidenceKinds, result.ReasonCodes);
         using var connection = _database.OpenConnection();
         using var transaction = connection.BeginTransaction(deferred: false);
-        var runId = ReadItemRunId(connection, transaction, itemId);
+        var itemBinding = ReadItemBinding(connection, transaction, itemId);
+        ValidateProbeResult(result, itemBinding.CandidateKind);
         var now = UtcNowText();
         using var update = Command(
             connection,
@@ -454,7 +499,7 @@ public sealed class ImageImportPreflightCatalog
                 "The source preflight item is not running.");
         }
 
-        RefreshCounts(connection, transaction, runId, now);
+        RefreshCounts(connection, transaction, itemBinding.RunId, now);
         transaction.Commit();
     }
 
@@ -465,7 +510,7 @@ public sealed class ImageImportPreflightCatalog
         var evidenceJson = SerializeEvidence([], [failureCode]);
         using var connection = _database.OpenConnection();
         using var transaction = connection.BeginTransaction(deferred: false);
-        var runId = ReadItemRunId(connection, transaction, itemId);
+        var itemBinding = ReadItemBinding(connection, transaction, itemId);
         var now = UtcNowText();
         using var update = Command(
             connection,
@@ -491,25 +536,21 @@ public sealed class ImageImportPreflightCatalog
                 "The source preflight item is not running.");
         }
 
-        RefreshCounts(connection, transaction, runId, now);
+        RefreshCounts(connection, transaction, itemBinding.RunId, now);
         transaction.Commit();
     }
 
-    internal ImageImportPreflightRun CommitDecision(
-        string runId,
-        string decision,
-        string decisionReasonCode)
+    internal ImageImportPreflightRun CommitDecision(string runId)
     {
         runId = NormalizeId(runId, nameof(runId));
-        decision = NormalizeDecision(decision);
-        decisionReasonCode = NormalizeCode(decisionReasonCode, nameof(decisionReasonCode));
         using var connection = _database.OpenConnection();
         using var transaction = connection.BeginTransaction(deferred: false);
         var current = ReadRunPrivate(connection, transaction, runId);
         if (current.Status == "completed")
         {
+            var response = ReadRun(connection, transaction, runId);
             transaction.Commit();
-            return ReadRun(connection, null, runId);
+            return response;
         }
 
         if (current.Status != "running")
@@ -534,7 +575,9 @@ public sealed class ImageImportPreflightCatalog
         var now = UtcNowText();
         RefreshCounts(connection, transaction, runId, now);
         var counts = ReadDecisionCounts(connection, transaction, runId);
-        ValidateDecision(decision, counts);
+        var derivedDecision = DeriveDecision(counts);
+        var decision = derivedDecision.Decision;
+        var decisionReasonCode = derivedDecision.ReasonCode;
         var summaryJson = JsonSerializer.Serialize(
             new SourcePreflightDecisionSummary(
                 "qiongtu.source-evidence.v1",
@@ -704,6 +747,60 @@ public sealed class ImageImportPreflightCatalog
         return runIds;
     }
 
+    internal ImageImportPreflightRun InterruptRun(string runId, string failureCode)
+    {
+        runId = NormalizeId(runId, nameof(runId));
+        failureCode = NormalizeCode(failureCode, nameof(failureCode));
+        using var connection = _database.OpenConnection();
+        using var transaction = connection.BeginTransaction(deferred: false);
+        var current = ReadRunPrivate(connection, transaction, runId);
+        if (current.Status is "completed" or "failed")
+        {
+            var terminal = ReadRun(connection, transaction, runId);
+            transaction.Commit();
+            return terminal;
+        }
+
+        var now = UtcNowText();
+        if (current.Status == "running")
+        {
+            using var resetItems = Command(
+                connection,
+                transaction,
+                "UPDATE source_preflight_items SET status = 'queued', updated_at_utc = $now WHERE source_preflight_run_id = $run_id AND status = 'running';");
+            Add(resetItems, "$now", now);
+            Add(resetItems, "$run_id", runId);
+            resetItems.ExecuteNonQuery();
+        }
+
+        using (var interrupt = Command(
+            connection,
+            transaction,
+            """
+            UPDATE source_preflight_runs
+            SET status = 'interrupted', failure_code = $failure_code,
+                updated_at_utc = $now, completed_at_utc = $now
+            WHERE source_preflight_run_id = $run_id
+              AND status IN ('queued', 'running', 'interrupted');
+            """))
+        {
+            Add(interrupt, "$failure_code", failureCode);
+            Add(interrupt, "$now", now);
+            Add(interrupt, "$run_id", runId);
+            if (interrupt.ExecuteNonQuery() != 1)
+            {
+                throw new BusinessCatalogException(
+                    "image_import_preflight_not_interruptible",
+                    "The image import source preflight run could not be interrupted safely.");
+            }
+        }
+
+        RefreshCounts(connection, transaction, runId, now);
+        var response = ReadRun(connection, transaction, runId);
+        transaction.Commit();
+        return response;
+    }
+
     internal IReadOnlyList<string> ListRecoverableRunIds()
     {
         using var connection = _database.OpenConnection();
@@ -799,12 +896,25 @@ public sealed class ImageImportPreflightCatalog
             connection,
             transaction,
             """
-            SELECT image_candidate_count, sidecar_candidate_count,
-                   supports_dji_item_count, out_of_scope_item_count,
-                   unconfirmed_item_count, conflict_item_count,
-                   failed_item_count, blocking_image_count
-            FROM source_preflight_runs
-            WHERE source_preflight_run_id = $run_id;
+            SELECT r.image_candidate_count, r.sidecar_candidate_count,
+                   r.supports_dji_item_count, r.out_of_scope_item_count,
+                   r.unconfirmed_item_count, r.conflict_item_count,
+                   r.failed_item_count, r.blocking_image_count,
+                   (SELECT count(*) FROM source_preflight_items i
+                    WHERE i.source_preflight_run_id = r.source_preflight_run_id
+                      AND i.candidate_kind = 'image_candidate' AND i.evidence_state = 'out_of_scope'),
+                   (SELECT count(*) FROM source_preflight_items i
+                    WHERE i.source_preflight_run_id = r.source_preflight_run_id
+                      AND i.candidate_kind = 'image_candidate' AND i.evidence_state = 'conflict'),
+                   (SELECT count(*) FROM source_preflight_items i
+                    WHERE i.source_preflight_run_id = r.source_preflight_run_id
+                      AND i.candidate_kind = 'image_candidate'
+                      AND (i.status = 'failed' OR i.evidence_state = 'read_failed')),
+                   (SELECT count(*) FROM source_preflight_items i
+                    WHERE i.source_preflight_run_id = r.source_preflight_run_id
+                      AND i.candidate_kind = 'image_candidate' AND i.evidence_state = 'unconfirmed')
+            FROM source_preflight_runs r
+            WHERE r.source_preflight_run_id = $run_id;
             """);
         Add(command, "$run_id", runId);
         using var reader = command.ExecuteReader();
@@ -823,18 +933,41 @@ public sealed class ImageImportPreflightCatalog
             reader.GetInt32(4),
             reader.GetInt32(5),
             reader.GetInt32(6),
-            reader.GetInt32(7));
+            reader.GetInt32(7),
+            reader.GetInt32(8),
+            reader.GetInt32(9),
+            reader.GetInt32(10),
+            reader.GetInt32(11));
     }
 
-    private static void ValidateDecision(string decision, SourcePreflightDecisionCounts counts)
+    private static SourcePreflightDerivedDecision DeriveDecision(SourcePreflightDecisionCounts counts)
     {
-        if (decision == "dji_supported" &&
-            (counts.ImageCandidateCount == 0 || counts.SupportsDjiItemCount == 0 || counts.BlockingImageCount != 0))
+        if (counts.ImageCandidateCount == 0)
         {
-            throw new BusinessCatalogException(
-                "image_import_preflight_decision_invalid",
-                "The source preflight evidence cannot support a DJI eligibility decision.");
+            return new SourcePreflightDerivedDecision("unconfirmed", "no_image_candidates");
         }
+
+        if (counts.ConflictImageCount > 0)
+        {
+            return new SourcePreflightDerivedDecision("out_of_scope", "source_evidence_conflict");
+        }
+
+        if (counts.OutOfScopeImageCount > 0)
+        {
+            return new SourcePreflightDerivedDecision("out_of_scope", "other_manufacturer_detected");
+        }
+
+        if (counts.FailedImageCount > 0)
+        {
+            return new SourcePreflightDerivedDecision("unconfirmed", "source_evidence_read_failed");
+        }
+
+        if (counts.UnconfirmedImageCount > 0 || counts.BlockingImageCount > 0)
+        {
+            return new SourcePreflightDerivedDecision("unconfirmed", "dji_evidence_incomplete");
+        }
+
+        return new SourcePreflightDerivedDecision("dji_supported", "dji_evidence_confirmed");
     }
 
     private static ImageImportPreflightRun ReadRun(
@@ -1005,7 +1138,7 @@ public sealed class ImageImportPreflightCatalog
             reader.GetString(3));
     }
 
-    private static string ReadItemRunId(
+    private static SourcePreflightItemBinding ReadItemBinding(
         SqliteConnection connection,
         SqliteTransaction transaction,
         string itemId)
@@ -1013,12 +1146,17 @@ public sealed class ImageImportPreflightCatalog
         using var command = Command(
             connection,
             transaction,
-            "SELECT source_preflight_run_id FROM source_preflight_items WHERE source_preflight_item_id = $item_id;");
+            "SELECT source_preflight_run_id, candidate_kind FROM source_preflight_items WHERE source_preflight_item_id = $item_id;");
         Add(command, "$item_id", itemId);
-        return command.ExecuteScalar() as string
-            ?? throw new BusinessCatalogException(
+        using var reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            throw new BusinessCatalogException(
                 "image_import_preflight_item_not_found",
                 "The source preflight item was not found.");
+        }
+
+        return new SourcePreflightItemBinding(reader.GetString(0), reader.GetString(1));
     }
 
     private static void EnsureRunExists(SqliteConnection connection, string runId)
@@ -1153,12 +1291,17 @@ public sealed class ImageImportPreflightCatalog
         };
     }
 
-    private static void ValidateProbeResult(ImageProbeSourcePreflightResult result)
+    private static void ValidateProbeResult(
+        ImageProbeSourcePreflightResult result,
+        string expectedCandidateKind)
     {
         if (result.SchemaVersion != ImageProbeProtocol.SourcePreflightV1 ||
             result.Profile != ImageProbeProtocol.SourcePreflightProfile ||
             result.Status != "completed" ||
-            result.CandidateKind is not ("image_candidate" or "positioning_aux_candidate") ||
+            result.CandidateKind != expectedCandidateKind ||
+            result.Parser.ProductParser != "qiongtu.source-preflight" ||
+            result.Parser.ProductParserVersion != ParserVersion ||
+            !IsExpectedMetadataExtractorVersion(result.Parser.MetadataExtractorVersion) ||
             result.ContainerHint is not ("jpeg_hint" or "mpo_hint" or "tiff" or "bigtiff" or "not_image" or "unknown") ||
             result.EvidenceState is not ("supports_dji" or "out_of_scope" or "unconfirmed" or "conflict") ||
             result.EvidenceKinds.Count > ImageProbeProtocol.MaximumEvidenceKinds ||
@@ -1173,6 +1316,9 @@ public sealed class ImageImportPreflightCatalog
                 "The source preflight probe response is invalid.");
         }
     }
+
+    private static bool IsExpectedMetadataExtractorVersion(string version) =>
+        version == "2.9.3" || version.StartsWith("2.9.3+", StringComparison.Ordinal);
 
     private static string SerializeEvidence(
         IEnumerable<string> evidenceKinds,
@@ -1285,16 +1431,6 @@ public sealed class ImageImportPreflightCatalog
             : throw new BusinessCatalogException(
                 "invalid_parameters",
                 "The image import candidate has an unsupported format hint.");
-    }
-
-    private static string NormalizeDecision(string value)
-    {
-        var normalized = NormalizeRequiredText(value, nameof(value), 32);
-        return normalized is "dji_supported" or "out_of_scope" or "unconfirmed"
-            ? normalized
-            : throw new BusinessCatalogException(
-                "invalid_parameters",
-                "The source preflight decision is invalid.");
     }
 
     private static string NormalizeCode(string value, string fieldName)
@@ -1464,6 +1600,10 @@ public sealed class ImageImportPreflightCatalog
         string DatasetVersionId,
         string Status);
 
+    private sealed record SourcePreflightItemBinding(
+        string RunId,
+        string CandidateKind);
+
     private sealed record SourcePreflightEvidence(
         IReadOnlyList<string> EvidenceKinds,
         IReadOnlyList<string> ReasonCodes);
@@ -1494,7 +1634,15 @@ public sealed class ImageImportPreflightCatalog
         int UnconfirmedItemCount,
         int ConflictItemCount,
         int FailedItemCount,
-        int BlockingImageCount);
+        int BlockingImageCount,
+        int OutOfScopeImageCount,
+        int ConflictImageCount,
+        int FailedImageCount,
+        int UnconfirmedImageCount);
+
+    private sealed record SourcePreflightDerivedDecision(
+        string Decision,
+        string ReasonCode);
 
     private sealed record CatalogMutation(
         string Method,

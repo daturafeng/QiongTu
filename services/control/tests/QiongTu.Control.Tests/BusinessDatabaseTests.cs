@@ -118,9 +118,13 @@ public sealed class BusinessDatabaseTests
             5,
             "0005_never_reached.sql",
             "CREATE TABLE also_never_reached(id INTEGER PRIMARY KEY);");
+        var sixthMigration = BusinessMigration.Create(
+            6,
+            "0006_never_reached.sql",
+            "CREATE TABLE still_never_reached(id INTEGER PRIMARY KEY);");
         var database = new BusinessDatabase(
             scope.DatabasePath,
-            [baselineMigration, secondMigration, brokenMigration, fourthMigration, fifthMigration]);
+            [baselineMigration, secondMigration, brokenMigration, fourthMigration, fifthMigration, sixthMigration]);
 
         var exception = Assert.Throws<BusinessDatabaseException>(database.Initialize);
 

@@ -309,6 +309,9 @@ internal sealed class IsolatedImageSourcePreflightProbeClient : IImageSourcePref
             !string.Equals(result.Profile, ImageProbeProtocol.SourcePreflightProfile, StringComparison.Ordinal) ||
             !string.Equals(result.CandidateKind, candidateKind, StringComparison.Ordinal) ||
             result.Status != "completed" ||
+            result.Parser.ProductParser != "qiongtu.source-preflight" ||
+            result.Parser.ProductParserVersion != "1.0.0" ||
+            !IsExpectedMetadataExtractorVersion(result.Parser.MetadataExtractorVersion) ||
             result.EvidenceState is not ("supports_dji" or "out_of_scope" or "unconfirmed" or "conflict") ||
             result.EvidenceKinds.Count > ImageProbeProtocol.MaximumEvidenceKinds ||
             result.ReasonCodes.Count > ImageProbeProtocol.MaximumReasonCodes ||
@@ -326,6 +329,9 @@ internal sealed class IsolatedImageSourcePreflightProbeClient : IImageSourcePref
                 "The isolated image source preflight process returned an invalid response.");
         }
     }
+
+    private static bool IsExpectedMetadataExtractorVersion(string version) =>
+        version == "2.9.3" || version.StartsWith("2.9.3+", StringComparison.Ordinal);
 
     private static async Task<byte[]> AwaitBoundedAfterChildExitAsync(Task<byte[]> task)
     {

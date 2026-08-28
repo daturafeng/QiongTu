@@ -343,10 +343,31 @@ public sealed class ImageImportAcceptanceTests
 
         public void SetSourceEligibility(string datasetVersionId, string sourceEligibilityState)
         {
-            Execute(
-                "UPDATE dataset_versions SET source_eligibility_state=$source_eligibility_state WHERE dataset_version_id=$dataset_version_id;",
-                ("$source_eligibility_state", sourceEligibilityState),
-                ("$dataset_version_id", datasetVersionId));
+            Assert.AreEqual("dji_supported", sourceEligibilityState);
+            var sessionId = Scalar<string>(
+                $"SELECT import_session_id FROM image_import_sessions WHERE dataset_version_id='{datasetVersionId}';");
+            var preflights = new ImageImportPreflightCatalog(_database);
+            var run = preflights.Start(
+                "acceptance-source-preflight-" + sessionId,
+                new ImageImportPreflightStartParameters(sessionId));
+            preflights.MarkRunning(run.PreflightRunId);
+            foreach (var item in preflights.ListWorkItems(run.PreflightRunId))
+            {
+                preflights.MarkItemRunning(item.ItemId);
+                preflights.CompleteItem(item.ItemId, new ImageProbeSourcePreflightResult(
+                    ImageProbeProtocol.SourcePreflightV1,
+                    ImageProbeProtocol.SourcePreflightProfile,
+                    "completed",
+                    item.CandidateKind,
+                    item.CandidateKind == "image_candidate" ? "jpeg_hint" : "not_image",
+                    "supports_dji",
+                    ["dji_exif_manufacturer"],
+                    [],
+                    new ImageProbeParserIdentity("qiongtu.source-preflight", "1.0.0", "2.9.3"),
+                    new ImageProbePrivacy(false, false, false, false, false, false, false, false)));
+            }
+
+            _ = preflights.CommitDecision(run.PreflightRunId);
         }
 
         public async Task WaitForSessionStatusAsync(string importSessionId, string status)

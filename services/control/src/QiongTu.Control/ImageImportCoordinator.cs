@@ -284,6 +284,37 @@ public sealed class ImageImportCoordinator : IAsyncDisposable
         }
     }
 
+    internal async Task EnqueueApprovedSessionAsync(
+        string importSessionId,
+        CancellationToken cancellationToken = default)
+    {
+        var session = _catalog.TryGetSession(importSessionId)
+            ?? throw new BusinessCatalogException(
+                "image_import_session_not_found",
+                "The image import session was not found.");
+        if (!string.Equals(session.SourceEligibilityState, "dji_supported", StringComparison.Ordinal))
+        {
+            throw new BusinessCatalogException(
+                "image_import_source_not_eligible",
+                "The image import session has not passed the DJI source preflight gate.");
+        }
+
+        if (session.Status == "ready")
+        {
+            await EnqueueAsync(importSessionId, cancellationToken);
+            return;
+        }
+
+        if (session.Status is "running" or "completed" or "cancelled" or "failed")
+        {
+            return;
+        }
+
+        throw new BusinessCatalogException(
+            "image_import_source_not_ready",
+            "The approved image import session is not ready to enter the copy queue.");
+    }
+
     public async Task WaitUntilIdleAsync(CancellationToken cancellationToken = default)
     {
         while (Volatile.Read(ref _queued) > 0 || Volatile.Read(ref _active) > 0)

@@ -1411,6 +1411,24 @@ export function isImageImportPreflightStartParameters(
     && isBoundedString(value.importSessionId, 128);
 }
 
+export function isImageImportPreflightGetParameters(
+  value: unknown
+): value is ImageImportPreflightGetParameters {
+  return isRecord(value)
+    && !hasImageImportPreflightPrivateProperty(value)
+    && isBoundedString(value.preflightRunId, 128);
+}
+
+export function isImageImportPreflightItemListParameters(
+  value: unknown
+): value is ImageImportPreflightItemListParameters {
+  return isRecord(value)
+    && !hasImageImportPreflightPrivateProperty(value)
+    && isBoundedString(value.preflightRunId, 128)
+    && isOptionalPageSize(value.pageSize)
+    && (value.cursor === undefined || isBoundedString(value.cursor, 512));
+}
+
 export function isImageImportPreflightRun(value: unknown): value is ImageImportPreflightRun {
   return isRecord(value)
     && !hasSensitiveContractProperty(value)

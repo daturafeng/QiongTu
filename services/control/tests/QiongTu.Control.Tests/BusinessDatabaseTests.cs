@@ -30,7 +30,7 @@ public sealed class BusinessDatabaseTests
             "image_metadata_fields", "positioning_aux_files", "positioning_aux_usage", "processing_jobs", "job_executions",
             "job_events", "result_series", "results", "result_files", "result_dependencies",
             "quality_reports", "quality_findings", "image_import_sessions", "image_import_entries",
-            "file_object_roles", "image_inspection_runs", "image_frame_lineage"
+            "file_object_roles", "image_inspection_runs", "image_frame_lineage", "image_metadata_runs"
         };
         foreach (var table in requiredTables)
         {
@@ -127,9 +127,13 @@ public sealed class BusinessDatabaseTests
             7,
             "0007_never_reached.sql",
             "CREATE TABLE latest_never_reached(id INTEGER PRIMARY KEY);");
+        var eighthMigration = BusinessMigration.Create(
+            8,
+            "0008_never_reached.sql",
+            "CREATE TABLE metadata_never_reached(id INTEGER PRIMARY KEY);");
         var database = new BusinessDatabase(
             scope.DatabasePath,
-            [baselineMigration, secondMigration, brokenMigration, fourthMigration, fifthMigration, sixthMigration, seventhMigration]);
+            [baselineMigration, secondMigration, brokenMigration, fourthMigration, fifthMigration, sixthMigration, seventhMigration, eighthMigration]);
 
         var exception = Assert.Throws<BusinessDatabaseException>(database.Initialize);
 
@@ -154,6 +158,30 @@ public sealed class BusinessDatabaseTests
         Assert.AreEqual(1L, Scalar<long>(upgraded, "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='projects';"));
         AssertSqlRejected(upgraded,
             "INSERT INTO file_objects(file_object_id,object_kind,hash_algorithm,content_hash,byte_length,object_key,storage_state,created_at_utc) VALUES('invalid-v2-key','formal_output','sha256','ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',1,'staging/not-formal','available','t');");
+    }
+
+    [TestMethod]
+    public void VersionSevenDatabaseWithUnprovenMetadataIsPreservedAndRejected()
+    {
+        using var scope = new DatabaseScope();
+        CreateVersionSevenDatabase(scope.DatabasePath);
+        using (var connection = OpenRaw(scope.DatabasePath))
+        {
+            Execute(connection, "PRAGMA foreign_keys=OFF;");
+            Execute(connection,
+                "INSERT INTO image_metadata_fields(image_metadata_field_id,image_id,field_name,source_kind,field_state,source_detail) VALUES('legacy-field','legacy-image','camera.model','exif','present','IFD0.Model');");
+        }
+
+        var exception = Assert.Throws<BusinessDatabaseException>(
+            () => new BusinessDatabase(scope.DatabasePath).Initialize());
+
+        Assert.AreEqual("business_database_migration_failed", exception.Code);
+        using var preserved = OpenRaw(scope.DatabasePath);
+        Assert.AreEqual(7L, Scalar<long>(preserved, "PRAGMA user_version;"));
+        Assert.AreEqual(7L, Scalar<long>(preserved, "SELECT count(*) FROM schema_migrations;"));
+        Assert.AreEqual(1L, Scalar<long>(preserved, "SELECT count(*) FROM image_metadata_fields WHERE image_metadata_field_id='legacy-field';"));
+        Assert.AreEqual(0L, Scalar<long>(preserved,
+            "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='image_metadata_runs';"));
     }
 
     [TestMethod]
@@ -282,6 +310,45 @@ public sealed class BusinessDatabaseTests
         seed?.Invoke(connection);
     }
 
+    private static void CreateVersionSevenDatabase(string databasePath)
+    {
+        var assembly = typeof(BusinessDatabase).Assembly;
+        var resources = assembly.GetManifestResourceNames()
+            .Where(name => name.Contains(".Migrations.Business.", StringComparison.Ordinal) &&
+                           name.EndsWith(".sql", StringComparison.Ordinal))
+            .Order(StringComparer.Ordinal)
+            .Take(7)
+            .ToArray();
+        Assert.HasCount(7, resources);
+
+        using var connection = OpenRaw(databasePath);
+        Execute(connection,
+            "CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,name TEXT NOT NULL,sql_sha256 TEXT NOT NULL CHECK(length(sql_sha256)=64),applied_at_utc TEXT NOT NULL);");
+        for (var index = 0; index < resources.Length; index++)
+        {
+            var resource = resources[index];
+            string sql;
+            using (var stream = assembly.GetManifestResourceStream(resource)!)
+            using (var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true))
+            {
+                sql = reader.ReadToEnd();
+            }
+
+            Execute(connection, sql);
+            var fileName = resource[(resource.LastIndexOf(".Migrations.Business.", StringComparison.Ordinal) + ".Migrations.Business.".Length)..];
+            var checksum = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sql))).ToLowerInvariant();
+            using var register = connection.CreateCommand();
+            register.CommandText =
+                "INSERT INTO schema_migrations(version,name,sql_sha256,applied_at_utc) VALUES($version,$name,$checksum,'2026-08-21T00:00:00Z');";
+            register.Parameters.AddWithValue("$version", index + 1);
+            register.Parameters.AddWithValue("$name", fileName);
+            register.Parameters.AddWithValue("$checksum", checksum);
+            register.ExecuteNonQuery();
+        }
+
+        Execute(connection, "PRAGMA user_version=7;");
+    }
+
     private static T Scalar<T>(SqliteConnection connection, string sql)
     {
         using var command = connection.CreateCommand();
@@ -395,8 +462,6 @@ public sealed class BusinessDatabaseTests
         UPDATE image_inspection_runs
         SET status='completed',image_id='image-1',updated_at_utc='2026-08-21T00:00:01Z',completed_at_utc='2026-08-21T00:00:01Z'
         WHERE inspection_run_id='inspection-1';
-        INSERT INTO image_metadata_fields(image_metadata_field_id,image_id,field_name,field_value_json,source_kind,field_state)
-        VALUES('metadata-1','image-1','gps.latitude','29.0','gps_exif','present');
         INSERT INTO positioning_aux_files(positioning_aux_file_id,dataset_version_id,file_object_id,auxiliary_type,retention_state,parse_state,quality_state,parser_name,parser_version,created_at_utc)
         VALUES('positioning-1','dataset-version-1','position-file','MRK','retained','parsed','passed','dji-mrk','v1','2026-08-21T00:00:00Z');
         INSERT INTO processing_jobs(processing_job_id,project_id,dataset_version_id,job_type,requested_outputs_json,parameter_profile,parameter_schema_version,parameters_json,parameter_sha256,lifecycle_state,recovery_state,created_at_utc,submitted_at_utc)

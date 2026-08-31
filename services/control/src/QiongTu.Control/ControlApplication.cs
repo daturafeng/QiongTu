@@ -39,10 +39,16 @@ public sealed class ControlApplication
         var objectStore = new ContentAddressedObjectStore(_paths.ObjectDirectory);
         var imageImportCatalog = new ImageImportCatalog(businessDatabase);
         var imageFrameCatalog = new ImageFrameCatalog(businessDatabase);
+        var imageMetadataCatalog = new ImageMetadataCatalog(businessDatabase);
+        await using var imageMetadataCoordinator = new ImageMetadataCoordinator(
+            imageMetadataCatalog,
+            objectStore,
+            new IsolatedImageMetadataProbeClient());
         await using var imageInspectionCoordinator = new ImageInspectionCoordinator(
             imageFrameCatalog,
             objectStore,
-            new IsolatedImageCasProbeClient());
+            new IsolatedImageCasProbeClient(),
+            imageMetadataCoordinator.EnqueueImageAsync);
         var imageImportSourceSecurity = new ImageImportSourceSecurity(
             Path.Combine(_paths.StateDirectory, "image-import-locators"));
         var imageImportSourceDiscovery = new ImageImportSourceDiscovery(imageImportSourceSecurity);
@@ -66,6 +72,7 @@ public sealed class ControlApplication
         await imageImportPreflightCoordinator.RecoverAsync(cancellationToken);
         await imageImportCoordinator.RecoverAsync(cancellationToken);
         await imageInspectionCoordinator.RecoverAsync(cancellationToken);
+        await imageMetadataCoordinator.RecoverAsync(cancellationToken);
 
         var roots = new ArtifactRootRegistry();
         roots.RegisterTrustedRoot("objects", objectStore.PublishedDirectory);
@@ -89,7 +96,8 @@ public sealed class ControlApplication
             _paths,
             imageImportPreflightCoordinator,
             imageImportPreflightCatalog,
-            imageInspectionCoordinator);
+            imageInspectionCoordinator,
+            imageMetadataCoordinator);
         await using var pipeServer = new NamedPipeControlServer(pipeName, dispatcher);
         pipeServer.Start();
 

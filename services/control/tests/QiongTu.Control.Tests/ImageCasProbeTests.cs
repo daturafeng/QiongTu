@@ -296,6 +296,34 @@ public sealed class ImageCasProbeTests
             startInfo.ArgumentList.ToArray());
     }
 
+    [TestMethod]
+    public async Task ImageMetadataAnalyzeAsync_RunsRealProbeAndReturnsCompleteAllowlist()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var store = new ContentAddressedObjectStore(Path.Combine(root, "objects"));
+            var published = await PublishAsync(store, CreateClassicRgbTiff());
+            var client = new IsolatedImageMetadataProbeClient(
+                new ImageCasProbeOptions(Timeout: TimeSpan.FromSeconds(20)),
+                CreateDevelopmentProbeStartInfo);
+
+            var result = await client.AnalyzeAsync(store, published, CancellationToken.None);
+
+            Assert.AreEqual("completed", result.Status, string.Join(',', result.ReasonCodes));
+            Assert.HasCount(20, result.Fields);
+            Assert.IsTrue(result.Fields.Any(field => field.FieldName == "pose.gimbal_roll_deg"));
+            Assert.IsTrue(result.Fields.Any(field => field.FieldName == "pose.flight_yaw_deg"));
+            Assert.IsFalse(result.Privacy.PathsIncluded);
+            Assert.IsFalse(result.Privacy.RawMetadataIncluded);
+            Assert.IsFalse(result.Privacy.SerialNumbersIncluded);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     private static async Task<PublishedObject> PublishAsync(
         ContentAddressedObjectStore store,
         byte[] bytes)

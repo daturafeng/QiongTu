@@ -11,6 +11,7 @@ internal sealed class ImageInspectionCoordinator : IAsyncDisposable
     private readonly ImageFrameCatalog _catalog;
     private readonly ContentAddressedObjectStore _objectStore;
     private readonly IImageCasProbeClient _probeClient;
+    private readonly Func<string, CancellationToken, Task>? _onCompletedImage;
     private readonly Channel<string> _queue;
     private readonly ConcurrentDictionary<string, byte> _pendingOrActive = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _stop = new();
@@ -22,11 +23,13 @@ internal sealed class ImageInspectionCoordinator : IAsyncDisposable
         ImageFrameCatalog catalog,
         ContentAddressedObjectStore objectStore,
         IImageCasProbeClient probeClient,
+        Func<string, CancellationToken, Task>? onCompletedImage = null,
         int queueCapacity = 128)
     {
         _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
         _objectStore = objectStore ?? throw new ArgumentNullException(nameof(objectStore));
         _probeClient = probeClient ?? throw new ArgumentNullException(nameof(probeClient));
+        _onCompletedImage = onCompletedImage;
         if (queueCapacity <= 0)
         {
             throw new ArgumentOutOfRangeException(nameof(queueCapacity));
@@ -195,7 +198,12 @@ internal sealed class ImageInspectionCoordinator : IAsyncDisposable
                     await ResumePublishedOrReusableAsync(run, cancellationToken);
                     continue;
                 case "recording":
-                    _catalog.CompleteManifest(inspectionRunId);
+                    var completion = _catalog.CompleteManifest(inspectionRunId);
+                    if (completion.ImageId is not null && _onCompletedImage is not null)
+                    {
+                        await _onCompletedImage(completion.ImageId, cancellationToken);
+                    }
+
                     return;
                 default:
                     _catalog.Block(inspectionRunId, "image_inspection_state_conflict");

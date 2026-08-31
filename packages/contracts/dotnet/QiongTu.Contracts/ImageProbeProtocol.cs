@@ -6,6 +6,10 @@ public static class ImageProbeProtocol
     public const string SourcePreflightProfile = "source-preflight.v1";
     public const string CasImageV1 = "qiongtu.image-probe.cas-image.v1";
     public const string CasImageProfile = "cas-image.v1";
+    public const string ImageMetadataV1 = "qiongtu.image-probe.image-metadata.v1";
+    public const string ImageMetadataProfile = "image-metadata.v1";
+    public const string DjiMetadataMapV1 = "dji-metadata-map.v1";
+    public const string MetadataConflictV1 = "metadata-conflict.v1";
     public const string StdioArgument = "--stdio";
     public const int MaximumHeaderBytes = 4 * 1024;
     public const int MaximumPayloadBytes = 16 * 1024 * 1024;
@@ -20,6 +24,8 @@ public static class ImageProbeProtocol
     public const long MaximumCasPixelsPerFrame = 1_000_000_000;
     public const long MaximumCasTotalPixels = 2_000_000_000;
     public const int MaximumCasMetadataBytes = 16 * 1024 * 1024;
+    public const int MaximumMetadataOutputBytes = MaximumCasOutputBytes;
+    public const int MaximumMetadataTextBytes = 512;
     public const int MaximumEvidenceKinds = 16;
     public const int MaximumReasonCodes = 16;
 }
@@ -104,4 +110,32 @@ public sealed record ImageProbeCasImageResult(
     IReadOnlyList<ImageProbeCasImageFrame> Frames,
     IReadOnlyList<string> ReasonCodes,
     ImageProbeCasImageParserIdentity Parser,
+    ImageProbePrivacy Privacy);
+
+public sealed record ImageProbeImageMetadataField(
+    string FieldName,
+    string SourceKind,
+    string SourceDetail,
+    string FieldState,
+    string ValueType,
+    string? TextValue,
+    double? NumericValue,
+    bool? BooleanValue,
+    string? Unit);
+
+public sealed record ImageProbeImageMetadataParserIdentity(
+    string ProductParser,
+    string ProductParserVersion,
+    string MetadataExtractorVersion,
+    string FieldMappingVersion,
+    string ConflictPolicyVersion);
+
+public sealed record ImageProbeImageMetadataResult(
+    string SchemaVersion,
+    string Profile,
+    string Status,
+    string ObjectKind,
+    IReadOnlyList<ImageProbeImageMetadataField> Fields,
+    IReadOnlyList<string> ReasonCodes,
+    ImageProbeImageMetadataParserIdentity Parser,
     ImageProbePrivacy Privacy);

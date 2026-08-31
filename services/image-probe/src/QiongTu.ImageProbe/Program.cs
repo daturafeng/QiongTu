@@ -9,10 +9,10 @@ public static class Program
 
     public static async Task<int> Main(string[] args)
     {
-        var casRequest = false;
+        var responseKind = "source-preflight";
         if (!args.SequenceEqual([ImageProbeProtocol.StdioArgument], StringComparer.Ordinal))
         {
-            await WriteFailureAsync("invalid_invocation", casRequest);
+            await WriteFailureAsync("invalid_invocation", responseKind);
             return 2;
         }
 
@@ -25,8 +25,16 @@ public static class Program
                 CancellationToken.None);
             var dispatch = JsonSerializer.Deserialize<ImageProbeDispatchHeader>(headerBytes, SerializerOptions)
                 ?? throw new ImageProbeProtocolException("invalid_header");
-            casRequest = string.Equals(dispatch.Profile, ImageProbeProtocol.CasImageProfile, StringComparison.Ordinal) ||
-                         string.Equals(dispatch.SchemaVersion, ImageProbeProtocol.CasImageV1, StringComparison.Ordinal);
+            if (string.Equals(dispatch.Profile, ImageProbeProtocol.CasImageProfile, StringComparison.Ordinal) ||
+                string.Equals(dispatch.SchemaVersion, ImageProbeProtocol.CasImageV1, StringComparison.Ordinal))
+            {
+                responseKind = "cas-image";
+            }
+            else if (string.Equals(dispatch.Profile, ImageProbeProtocol.ImageMetadataProfile, StringComparison.Ordinal) ||
+                     string.Equals(dispatch.SchemaVersion, ImageProbeProtocol.ImageMetadataV1, StringComparison.Ordinal))
+            {
+                responseKind = "image-metadata";
+            }
 
             if (string.Equals(dispatch.Profile, ImageProbeProtocol.SourcePreflightProfile, StringComparison.Ordinal) &&
                 string.Equals(dispatch.SchemaVersion, ImageProbeProtocol.SourcePreflightV1, StringComparison.Ordinal))
@@ -51,7 +59,7 @@ public static class Program
                 return 0;
             }
 
-            if (casRequest)
+            if (responseKind == "cas-image")
             {
                 var header = JsonSerializer.Deserialize<ImageProbeCasImageRequestHeader>(headerBytes, SerializerOptions)
                     ?? throw new ImageProbeProtocolException("invalid_header");
@@ -73,36 +81,58 @@ public static class Program
                 return result.Status == "failed" ? 1 : 0;
             }
 
+            if (responseKind == "image-metadata")
+            {
+                var header = JsonSerializer.Deserialize<ImageProbeCasImageRequestHeader>(headerBytes, SerializerOptions)
+                    ?? throw new ImageProbeProtocolException("invalid_header");
+                ImageMetadataAnalyzer.ValidateHeader(header);
+                if (await StdioEnvelope.HasTrailingDataAsync(input, CancellationToken.None))
+                {
+                    throw new ImageProbeProtocolException("trailing_input");
+                }
+
+                var result = ImageMetadataAnalyzer.Analyze(header);
+                if (JsonSerializer.SerializeToUtf8Bytes(result, SerializerOptions).Length >
+                    ImageProbeProtocol.MaximumMetadataOutputBytes)
+                {
+                    await WriteResultAsync(ImageMetadataAnalyzer.Failed("probe_output_limit_exceeded"));
+                    return 1;
+                }
+
+                await WriteResultAsync(result);
+                return result.Status == "failed" ? 1 : 0;
+            }
+
             throw new ImageProbeProtocolException("unsupported_protocol");
         }
         catch (ImageProbeProtocolException exception)
         {
-            await WriteFailureAsync(exception.Code, casRequest);
+            await WriteFailureAsync(exception.Code, responseKind);
             return 2;
         }
         catch (IOException)
         {
-            await WriteFailureAsync("probe_io_failed", casRequest);
+            await WriteFailureAsync("probe_io_failed", responseKind);
             return 1;
         }
         catch (JsonException)
         {
-            await WriteFailureAsync("header_json_invalid", casRequest);
+            await WriteFailureAsync("header_json_invalid", responseKind);
             return 1;
         }
         catch (InvalidOperationException)
         {
-            await WriteFailureAsync("probe_invalid_operation", casRequest);
+            await WriteFailureAsync("probe_invalid_operation", responseKind);
             return 1;
         }
         catch (ArgumentException)
         {
-            await WriteFailureAsync("probe_argument_invalid", casRequest);
+            await WriteFailureAsync("probe_argument_invalid", responseKind);
             return 1;
         }
         catch (OverflowException)
         {
-            await WriteFailureAsync("probe_overflow", casRequest);
+            await WriteFailureAsync("probe_overflow", responseKind);
             return 1;
         }
     }
@@ -113,10 +143,16 @@ public static class Program
     private static Task WriteResultAsync(ImageProbeCasImageResult result) =>
         WriteBoundedJsonAsync(result);
 
-    private static Task WriteFailureAsync(string reasonCode, bool casRequest) =>
-        casRequest
-            ? WriteBoundedJsonAsync(CasImageAnalyzer.Failed(reasonCode))
-            : WriteBoundedJsonAsync(SourcePreflightAnalyzer.Failed(reasonCode));
+    private static Task WriteResultAsync(ImageProbeImageMetadataResult result) =>
+        WriteBoundedJsonAsync(result);
+
+    private static Task WriteFailureAsync(string reasonCode, string responseKind) =>
+        responseKind switch
+        {
+            "cas-image" => WriteBoundedJsonAsync(CasImageAnalyzer.Failed(reasonCode)),
+            "image-metadata" => WriteBoundedJsonAsync(ImageMetadataAnalyzer.Failed(reasonCode)),
+            _ => WriteBoundedJsonAsync(SourcePreflightAnalyzer.Failed(reasonCode))
+        };
 
     private static async Task WriteBoundedJsonAsync(ImageProbeSourcePreflightResult result)
     {
@@ -140,6 +176,21 @@ public static class Program
         {
             bytes = JsonSerializer.SerializeToUtf8Bytes(
                 CasImageAnalyzer.Failed("probe_output_limit_exceeded"),
+                SerializerOptions);
+        }
+
+        var output = Console.OpenStandardOutput();
+        await output.WriteAsync(bytes);
+        await output.FlushAsync();
+    }
+
+    private static async Task WriteBoundedJsonAsync(ImageProbeImageMetadataResult result)
+    {
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(result, SerializerOptions);
+        if (bytes.Length > ImageProbeProtocol.MaximumMetadataOutputBytes)
+        {
+            bytes = JsonSerializer.SerializeToUtf8Bytes(
+                ImageMetadataAnalyzer.Failed("probe_output_limit_exceeded"),
                 SerializerOptions);
         }
 

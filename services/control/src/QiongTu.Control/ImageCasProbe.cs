@@ -214,12 +214,11 @@ internal sealed class IsolatedImageCasProbeClient : IImageCasProbeClient
         Directory.CreateDirectory(privateRuntimeRoot);
         try
         {
-            return await RunProbeAsync(
+            var output = await RunRawProbeAsync(
                 request,
-                objectKind,
-                verified.ByteLength,
                 privateRuntimeRoot,
                 cancellationToken);
+            return DeserializeCasResult(output, objectKind, verified.ByteLength);
         }
         finally
         {
@@ -238,10 +237,8 @@ internal sealed class IsolatedImageCasProbeClient : IImageCasProbeClient
         return startInfo;
     }
 
-    private async Task<ImageProbeCasImageResult> RunProbeAsync(
+    internal async Task<byte[]> RunRawProbeAsync(
         byte[] request,
-        string objectKind,
-        long objectByteLength,
         string privateRuntimeRoot,
         CancellationToken cancellationToken)
     {
@@ -376,23 +373,31 @@ internal sealed class IsolatedImageCasProbeClient : IImageCasProbeClient
                     $"The isolated CAS image probe returned a failure status ({code}).");
             }
 
-            ImageProbeCasImageResult result;
-            try
-            {
-                result = JsonSerializer.Deserialize<ImageProbeCasImageResult>(output, SerializerOptions)
-                    ?? throw new JsonException();
-            }
-            catch (JsonException exception)
-            {
-                throw new ImageCasProbeException(
-                    "cas_image_probe_response_invalid",
-                    "The isolated CAS image probe returned an invalid response.",
-                    exception);
-            }
-
-            ValidateResult(result, objectKind, objectByteLength);
-            return result;
+            return output;
         }
+    }
+
+    private static ImageProbeCasImageResult DeserializeCasResult(
+        ReadOnlySpan<byte> output,
+        string objectKind,
+        long objectByteLength)
+    {
+        ImageProbeCasImageResult result;
+        try
+        {
+            result = JsonSerializer.Deserialize<ImageProbeCasImageResult>(output, SerializerOptions)
+                ?? throw new JsonException();
+        }
+        catch (JsonException exception)
+        {
+            throw new ImageCasProbeException(
+                "cas_image_probe_response_invalid",
+                "The isolated CAS image probe returned an invalid response.",
+                exception);
+        }
+
+        ValidateResult(result, objectKind, objectByteLength);
+        return result;
     }
 
     private static ProcessStartInfo PrepareStartInfo(ProcessStartInfo startInfo, string privateRuntimeRoot)

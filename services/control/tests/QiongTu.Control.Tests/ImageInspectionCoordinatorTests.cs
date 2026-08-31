@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using QiongTu.Contracts;
 
@@ -145,6 +146,139 @@ public sealed class ImageInspectionCoordinatorTests
         CollectionAssert.AreEqual(source[8..20], memory.ToArray());
     }
 
+    [TestMethod]
+    public async Task MetadataCatalogPersistsCompleteImmutableInventoryAndIdempotentSummary()
+    {
+        await using var scope = await CreateCompletedJpegScopeAsync();
+        var imageId = scope.Scalar<string>("SELECT image_id FROM images;");
+        var catalog = new ImageMetadataCatalog(scope.Database);
+        var run = catalog.EnsureRun(imageId);
+        catalog.BeginParsing(run.MetadataRunId);
+        var fields = CompleteMetadataFields();
+
+        var completed = catalog.Complete(run.MetadataRunId, fields);
+        var replay = catalog.Complete(run.MetadataRunId, fields);
+
+        Assert.AreEqual("completed", completed.Status);
+        Assert.IsFalse(completed.ReusedExisting);
+        Assert.IsTrue(replay.ReusedExisting);
+        Assert.AreEqual(20L, scope.Scalar<long>("SELECT count(*) FROM image_metadata_fields;"));
+        Assert.AreEqual("DJI", scope.Scalar<string>("SELECT manufacturer FROM images;"));
+        Assert.AreEqual("FC-Test", scope.Scalar<string>("SELECT camera_model FROM images;"));
+        Assert.AreEqual("2026-08-31T01:02:03Z", scope.Scalar<string>("SELECT capture_time_utc FROM images;"));
+        Assert.AreEqual("parsed", scope.Scalar<string>("SELECT metadata_state FROM images;"));
+        Assert.AreEqual(0L, scope.Scalar<long>("SELECT count(*) FROM images WHERE raw_metadata_json IS NOT NULL;"));
+        Assert.AreEqual(
+            "gps_exif",
+            scope.Scalar<string>("SELECT source_kind FROM image_metadata_fields WHERE field_name='position.latitude_deg';"));
+
+        using var connection = scope.Database.OpenConnection();
+        Assert.Throws<SqliteException>(() => ExecuteSql(
+            connection,
+            "UPDATE image_metadata_fields SET source_detail='changed' WHERE field_name='camera.manufacturer';"));
+        Assert.Throws<SqliteException>(() => ExecuteSql(
+            connection,
+            "UPDATE images SET manufacturer='changed';"));
+
+        var changed = fields
+            .Select(field => field.FieldName == "camera.model"
+                ? field with { FieldValueJson = JsonSerializer.Serialize("FC-Changed") }
+                : field)
+            .ToArray();
+        var conflict = Assert.Throws<BusinessCatalogException>(() => catalog.Complete(run.MetadataRunId, changed));
+        Assert.AreEqual("image_metadata_inventory_conflict", conflict.Code);
+    }
+
+    [TestMethod]
+    public async Task MetadataCatalogPreservesConflictingCoordinateSourcesWithoutSelectingSummary()
+    {
+        await using var scope = await CreateCompletedJpegScopeAsync();
+        var imageId = scope.Scalar<string>("SELECT image_id FROM images;");
+        var catalog = new ImageMetadataCatalog(scope.Database);
+        var run = catalog.EnsureRun(imageId);
+        catalog.BeginParsing(run.MetadataRunId);
+        var fields = CompleteMetadataFields()
+            .Where(field => field.FieldName is not ("position.latitude_deg" or "position.longitude_deg"))
+            .Concat(
+            [
+                ValueField("position.latitude_deg", 29.0, "gps_exif", "conflict", "GPS.Latitude"),
+                ValueField("position.latitude_deg", 29.1, "dji_xmp", "conflict", "drone-dji:GpsLatitude"),
+                ValueField("position.longitude_deg", 106.0, "gps_exif", "conflict", "GPS.Longitude"),
+                ValueField("position.longitude_deg", 106.1, "dji_xmp", "conflict", "drone-dji:GpsLongitude")
+            ])
+            .ToArray();
+
+        catalog.Complete(run.MetadataRunId, fields);
+
+        Assert.AreEqual("conflict", scope.Scalar<string>("SELECT metadata_state FROM images;"));
+        Assert.AreEqual(4L, scope.Scalar<long>(
+            "SELECT count(*) FROM image_metadata_fields WHERE field_name IN ('position.latitude_deg','position.longitude_deg') AND field_state='conflict';"));
+    }
+
+    [TestMethod]
+    public async Task BlockedMetadataRunLeavesFrameManifestAndFieldsUntouched()
+    {
+        await using var scope = await CreateCompletedJpegScopeAsync();
+        var imageId = scope.Scalar<string>("SELECT image_id FROM images;");
+        var catalog = new ImageMetadataCatalog(scope.Database);
+        var run = catalog.EnsureRun(imageId);
+        catalog.BeginParsing(run.MetadataRunId);
+
+        catalog.Block(run.MetadataRunId, "image_metadata_probe_timeout");
+
+        Assert.AreEqual("blocked", scope.Scalar<string>("SELECT status FROM image_metadata_runs;"));
+        Assert.AreEqual("abnormal", scope.Scalar<string>("SELECT metadata_state FROM images;"));
+        Assert.AreEqual(0L, scope.Scalar<long>("SELECT count(*) FROM image_metadata_fields;"));
+        Assert.AreEqual(1L, scope.Scalar<long>("SELECT count(*) FROM image_frames;"));
+        Assert.AreEqual("completed", scope.Scalar<string>("SELECT status FROM image_inspection_runs;"));
+    }
+
+    [TestMethod]
+    public async Task CompletedFrameManifestWakesIndependentMetadataCoordinator()
+    {
+        await using var scope = await InspectionScope.CreateAsync([1, 2, 3, 4]);
+        var metadataProbe = new FixedMetadataProbe(CompletedMetadataResult(CompleteMetadataFields()));
+        await using var metadataCoordinator = new ImageMetadataCoordinator(
+            new ImageMetadataCatalog(scope.Database),
+            scope.Store,
+            metadataProbe);
+        var imageResult = CompletedResult(
+            "jpeg",
+            [new ImageProbeCasImageFrame(0, "jpeg", 0, 4, 4, 3, 8, 1, "decoded")]);
+        await using var imageCoordinator = new ImageInspectionCoordinator(
+            new ImageFrameCatalog(scope.Database),
+            scope.Store,
+            new FixedProbe(imageResult),
+            metadataCoordinator.EnqueueImageAsync);
+
+        await imageCoordinator.EnqueueImportEntryAsync(InspectionScope.ImportEntryId);
+        await WaitForIdleAsync(imageCoordinator);
+        await WaitForIdleAsync(metadataCoordinator);
+
+        Assert.AreEqual("completed", scope.Scalar<string>("SELECT status FROM image_metadata_runs;"));
+        Assert.AreEqual(20L, scope.Scalar<long>("SELECT count(*) FROM image_metadata_fields;"));
+        Assert.AreEqual(1, metadataProbe.CallCount);
+    }
+
+    [TestMethod]
+    public async Task MetadataCoordinatorRecoveryReparsesInterruptedRunOnce()
+    {
+        await using var scope = await CreateCompletedJpegScopeAsync();
+        var catalog = new ImageMetadataCatalog(scope.Database);
+        var run = catalog.EnsureRun(scope.Scalar<string>("SELECT image_id FROM images;"));
+        catalog.BeginParsing(run.MetadataRunId);
+        var probe = new FixedMetadataProbe(CompletedMetadataResult(CompleteMetadataFields()));
+        await using var coordinator = new ImageMetadataCoordinator(catalog, scope.Store, probe);
+
+        await coordinator.RecoverAsync();
+        await WaitForIdleAsync(coordinator);
+        await coordinator.EnqueueImageAsync(run.ImageId);
+        await WaitForIdleAsync(coordinator);
+
+        Assert.AreEqual("completed", scope.Scalar<string>("SELECT status FROM image_metadata_runs;"));
+        Assert.AreEqual(1, probe.CallCount);
+    }
+
     private static ImageProbeCasImageResult CompletedResult(
         string container,
         IReadOnlyList<ImageProbeCasImageFrame> frames) =>
@@ -165,6 +299,142 @@ public sealed class ImageInspectionCoordinatorTests
                 "14.16.0"),
             new ImageProbePrivacy(false, false, false, false, false, false, false, false));
 
+    private static async Task<InspectionScope> CreateCompletedJpegScopeAsync()
+    {
+        var scope = await InspectionScope.CreateAsync([1, 2, 3, 4]);
+        var result = CompletedResult(
+            "jpeg",
+            [new ImageProbeCasImageFrame(0, "jpeg", 0, 4, 4, 3, 8, 1, "decoded")]);
+        await using var coordinator = scope.CreateCoordinator(new FixedProbe(result));
+        await coordinator.EnqueueImportEntryAsync(InspectionScope.ImportEntryId);
+        await WaitForIdleAsync(coordinator);
+        return scope;
+    }
+
+    private static IReadOnlyList<ImageMetadataCatalogField> CompleteMetadataFields()
+    {
+        var values = new Dictionary<string, ImageMetadataCatalogField>(StringComparer.Ordinal)
+        {
+            ["capture.time_local"] = ValueField("capture.time_local", "2026-08-31T09:02:03", "exif", "present", "ExifSubIFD.DateTimeOriginal"),
+            ["capture.time_utc"] = ValueField("capture.time_utc", "2026-08-31T01:02:03Z", "exif", "present", "ExifSubIFD.DateTimeOriginal+OffsetTimeOriginal"),
+            ["camera.manufacturer"] = ValueField("camera.manufacturer", "DJI", "exif", "present", "ExifIFD0.Make"),
+            ["camera.model"] = ValueField("camera.model", "FC-Test", "exif", "present", "ExifIFD0.Model"),
+            ["camera.lens_model"] = ValueField("camera.lens_model", "Lens-Test", "exif", "present", "ExifSubIFD.LensModel"),
+            ["camera.focal_length_mm"] = ValueField("camera.focal_length_mm", 24.0, "exif", "present", "ExifSubIFD.FocalLength"),
+            ["position.latitude_deg"] = ValueField("position.latitude_deg", 29.0, "gps_exif", "present", "GPS.Latitude"),
+            ["position.longitude_deg"] = ValueField("position.longitude_deg", 106.0, "gps_exif", "present", "GPS.Longitude")
+        };
+        return ImageMetadataCatalog.RequiredFieldNames
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .Select(name => values.TryGetValue(name, out var value)
+                ? value
+                : new ImageMetadataCatalogField(name, null, "derived", "missing", "image-metadata.v1:missing"))
+            .ToArray();
+    }
+
+    private static ImageProbeImageMetadataResult CompletedMetadataResult(
+        IReadOnlyList<ImageMetadataCatalogField> fields)
+    {
+        var probeFields = fields.Select(field =>
+        {
+            if (field.FieldValueJson is null)
+            {
+                return new ImageProbeImageMetadataField(
+                    field.FieldName,
+                    field.SourceKind,
+                    field.SourceDetail,
+                    field.FieldState,
+                    "none",
+                    null,
+                    null,
+                    null,
+                    null);
+            }
+
+            using var document = JsonDocument.Parse(field.FieldValueJson);
+            var unit = field.FieldName == "camera.focal_length_mm"
+                ? "mm"
+                : field.FieldName.EndsWith("_deg", StringComparison.Ordinal)
+                    ? "deg"
+                    : field.FieldName.EndsWith("_m", StringComparison.Ordinal)
+                        ? "m"
+                        : null;
+            return document.RootElement.ValueKind switch
+            {
+                JsonValueKind.String => new ImageProbeImageMetadataField(
+                    field.FieldName,
+                    field.SourceKind,
+                    field.SourceDetail,
+                    field.FieldState,
+                    "text",
+                    document.RootElement.GetString(),
+                    null,
+                    null,
+                    null),
+                JsonValueKind.Number => new ImageProbeImageMetadataField(
+                    field.FieldName,
+                    field.SourceKind,
+                    field.SourceDetail,
+                    field.FieldState,
+                    "number",
+                    null,
+                    document.RootElement.GetDouble(),
+                    null,
+                    unit),
+                JsonValueKind.True or JsonValueKind.False => new ImageProbeImageMetadataField(
+                    field.FieldName,
+                    field.SourceKind,
+                    field.SourceDetail,
+                    field.FieldState,
+                    "boolean",
+                    null,
+                    null,
+                    document.RootElement.GetBoolean(),
+                    null),
+                _ => throw new AssertFailedException("Unsupported synthetic metadata value kind.")
+            };
+        }).ToArray();
+        return new ImageProbeImageMetadataResult(
+            ImageProbeProtocol.ImageMetadataV1,
+            ImageProbeProtocol.ImageMetadataProfile,
+            "completed",
+            "normalized_image_frame",
+            probeFields,
+            [],
+            new ImageProbeImageMetadataParserIdentity(
+                ImageMetadataCatalog.ProductParser,
+                ImageMetadataCatalog.ProductParserVersion,
+                ImageMetadataCatalog.MetadataExtractorVersion,
+                ImageMetadataCatalog.FieldMappingVersion,
+                ImageMetadataCatalog.ConflictPolicyVersion),
+            new ImageProbePrivacy(
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                probeFields.Any(field =>
+                    field.FieldName.StartsWith("position.", StringComparison.Ordinal) &&
+                    field.FieldState is "present" or "conflict"),
+                false));
+    }
+
+    private static ImageMetadataCatalogField ValueField(
+        string fieldName,
+        object value,
+        string sourceKind,
+        string fieldState,
+        string sourceDetail) =>
+        new(fieldName, JsonSerializer.Serialize(value), sourceKind, fieldState, sourceDetail);
+
+    private static void ExecuteSql(SqliteConnection connection, string sql)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.ExecuteNonQuery();
+    }
+
     private static async Task WaitForIdleAsync(ImageInspectionCoordinator coordinator)
     {
         var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
@@ -174,6 +444,17 @@ public sealed class ImageInspectionCoordinatorTests
         }
 
         Assert.IsTrue(coordinator.IsIdle, "The image inspection coordinator did not become idle.");
+    }
+
+    private static async Task WaitForIdleAsync(ImageMetadataCoordinator coordinator)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (!coordinator.IsIdle && DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(10);
+        }
+
+        Assert.IsTrue(coordinator.IsIdle, "The image metadata coordinator did not become idle.");
     }
 
     private sealed class FixedProbe(ImageProbeCasImageResult result) : IImageCasProbeClient
@@ -193,6 +474,22 @@ public sealed class ImageInspectionCoordinatorTests
             string objectKind,
             CancellationToken cancellationToken) =>
             throw new AssertFailedException("Recovery after formal publication must not probe or extract the source again.");
+    }
+
+    private sealed class FixedMetadataProbe(ImageProbeImageMetadataResult result) : IImageMetadataProbeClient
+    {
+        private int _callCount;
+
+        public int CallCount => Volatile.Read(ref _callCount);
+
+        public Task<ImageProbeImageMetadataResult> AnalyzeAsync(
+            ContentAddressedObjectStore objectStore,
+            PublishedObject normalizedObject,
+            CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _callCount);
+            return Task.FromResult(result);
+        }
     }
 
     private sealed class InspectionScope : IAsyncDisposable

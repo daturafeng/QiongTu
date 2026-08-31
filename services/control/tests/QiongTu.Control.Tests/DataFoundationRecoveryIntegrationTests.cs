@@ -382,8 +382,6 @@ public sealed class DataFoundationRecoveryIntegrationTests
                 UPDATE image_inspection_runs
                 SET status='completed', image_id=$image_id, updated_at_utc=$created_at_utc, completed_at_utc=$created_at_utc
                 WHERE inspection_run_id=$inspection_id;
-                INSERT INTO image_metadata_fields(image_metadata_field_id, image_id, field_name, field_value_json, source_kind, field_state, source_detail)
-                VALUES($metadata_id, $image_id, 'manufacturer', '"DJI"', 'exif', 'present', 'EXIF Make');
                 """,
                 ("$session_id", $"session-{imageId}"),
                 ("$manifest_id", $"manifest-{imageId}"),
@@ -396,7 +394,6 @@ public sealed class DataFoundationRecoveryIntegrationTests
                 ("$lineage_hash", lineageHash),
                 ("$lineage_id", $"lineage-{imageId}"),
                 ("$frame_id", $"frame-{imageId}"),
-                ("$metadata_id", $"metadata-{imageId}"),
                 ("$image_id", imageId),
                 ("$dataset_version_id", datasetVersionId),
                 ("$source_file_object_id", sourceFileObjectId),

@@ -128,13 +128,41 @@
 ### Requirement: 系统建立影像元数据清单
 系统 SHALL 在正式 CAS 原始对象完成容器与主帧检查后，从标准 EXIF/GPS、DJI maker note 与受支持的制造商 XMP 中提取每张影像可用的拍摄时间、原始/有效尺寸、方向、相机与镜头、焦距、GPS 位置、高度、云台姿态、飞行姿态、RTK 状态及位置标准差信息，并 SHALL 记录每个字段的来源 kind/detail 与 parser profile/version。系统 SHALL 明确标记缺失、冲突或异常字段，不得伪造默认值冒充采集数据；复制前来源预检只能保存脱敏批次判定证据，不能冒充完整逐影像元数据清单。
 
+#### Scenario: 从权威主帧建立固定字段清单
+- **WHEN** 3.3b 已为 canonical source image 完成权威帧清单与规范化主摄影帧对象
+- **THEN** 系统只对该 image 绑定的可用 `normalized_image_frame` 正式对象运行 `image-metadata.v1`，以 `MetadataExtractor 2.9.3`、`dji-metadata-map.v1` 和 `metadata-conflict.v1` 建立类型化逐字段清单；原始/有效尺寸与方向继续引用 3.3b 权威帧清单，不另存可漂移副本
+
+#### Scenario: 字段存在、缺失或异常
+- **WHEN** allowlist 字段在标准 EXIF/GPS、DJI maker note 或 DJI XMP 中存在、完全缺失，或值为越界、非有限数、错误类型或超长文本
+- **THEN** 系统分别以固定 source kind/detail 保存合法类型化值，或以 `missing`/`abnormal` 保存没有伪造默认值的状态；每个规范字段均有可解释终态，异常值不得写入 image 摘要
+
+#### Scenario: 拍摄时间缺少时区
+- **WHEN** EXIF 提供 DateTimeOriginal 但没有可信时区或 UTC offset
+- **THEN** 系统保留规范化本地拍摄时间，并把 UTC 字段标记为 `not_assessable`，不得使用控制主机时区猜测 UTC
+
 #### Scenario: 影像缺少定位信息
 - **WHEN** 影像不包含有效 GPS 坐标
 - **THEN** 质检报告将其标记为缺少定位信息，并说明这会影响绝对地理配准和覆盖分析
 
 #### Scenario: EXIF 与制造商 XMP 定位冲突
-- **WHEN** 同一影像的标准 GPS 与制造商 XMP 坐标差异超过配置容差
-- **THEN** 系统保留两组原始值、标记冲突并禁止未经确认地选择其中一组作为高精度位置
+- **WHEN** 同一影像的标准 GPS 与 DJI XMP 经纬度任一分量差异大于 `0.000001` 度，或两者绝对高度差异大于 `0.20 m`
+- **THEN** 系统保留两组 allowlist 类型化值并将相关字段标记为 `conflict`，禁止未经确认选择其中一组作为高精度位置，也不得把 XMP 的 RTK 标志或标准差等同于辅助定位已实际使用
+
+#### Scenario: DJI 姿态来源冲突
+- **WHEN** 同一云台或飞行姿态轴同时来自 DJI maker note 与 DJI XMP 且差异大于 `0.01` 度
+- **THEN** 系统保留两个来源及固定 tag/property 标识并标记冲突，不静默选择其中一项
+
+#### Scenario: 元数据解析可恢复且幂等
+- **WHEN** 控制服务在元数据解析中退出、在解析结果提交前退出，或对同一 completed image 重复唤醒
+- **THEN** 启动恢复将遗留运行标记为 interrupted 并对同一规范化对象和固定版本安全重跑，最终只提交一个 completed 运行和一份不可变字段清单；既有库存指纹不一致时阻断而不是覆盖
+
+#### Scenario: 元数据解析失败不污染帧清单
+- **WHEN** 正式对象身份复核失败、隔离探测器超时/崩溃/输出超限、MetadataExtractor 版本不匹配或结果不符合 allowlist 协议
+- **THEN** 系统以脱敏原因将元数据运行阻断并把 image metadata state 标为 abnormal，不修改 3.3b 的 image/frame/lineage 身份，不保存部分字段、原始 metadata dump 或序列号
+
+#### Scenario: 元数据隐私边界
+- **WHEN** 影像包含未知 XMP 属性、相机/镜头/机身序列号、GPS 坐标或所有者样例特征
+- **THEN** 隔离结果与业务库只接收本地字段 allowlist，序列号、未知属性和原始 EXIF/XMP/maker note dump 永不进入结果；首版不新增公共元数据 API，普通日志、错误和公开工件不得输出字段值、绝对路径、对象键、内容哈希、坐标或所有者样例统计
 
 ### Requirement: 系统执行可解释的质量检查
 系统 SHALL 检查重复文件、图像模糊或曝光异常风险、分辨率不一致、相机模型一致性、定位异常以及可估算的覆盖与重叠风险。每项检查 SHALL 输出指标、阈值、结论和修复建议；无法可靠计算的指标 SHALL 标记为“不可评估”。

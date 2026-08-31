@@ -197,6 +197,93 @@ public sealed class ImageCasProbeTests
     }
 
     [TestMethod]
+    [DataRow(false, "cas_image_probe_output_limit_exceeded")]
+    [DataRow(true, "cas_image_probe_error_limit_exceeded")]
+    public async Task AnalyzeAsync_ContinuousChildOutputIsKilledAtLimit(
+        bool writeToStandardError,
+        string expectedCode)
+    {
+        var root = CreateRoot();
+        try
+        {
+            var store = new ContentAddressedObjectStore(Path.Combine(root, "objects"));
+            var published = await PublishAsync(store, CreateClassicRgbTiff());
+            var client = new IsolatedImageCasProbeClient(
+                new ImageCasProbeOptions(
+                    Timeout: TimeSpan.FromSeconds(10),
+                    MaximumOutputBytes: 1024,
+                    MaximumErrorBytes: 1024),
+                () => CreateContinuousOutputStartInfo(writeToStandardError));
+            var stopwatch = Stopwatch.StartNew();
+
+            var exception = await Assert.ThrowsAsync<ImageCasProbeException>(() =>
+                client.AnalyzeAsync(store, published, "source_image", CancellationToken.None));
+
+            stopwatch.Stop();
+            Assert.AreEqual(expectedCode, exception.Code);
+            Assert.IsLessThan(TimeSpan.FromSeconds(5), stopwatch.Elapsed);
+            Assert.DoesNotContain(published.Sha256, exception.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void ValidateResult_RejectsNullReferenceFieldsFromChild()
+    {
+        var valid = CreateCompletedJpegResult(128);
+
+        var framesException = Assert.Throws<ImageCasProbeException>(() =>
+            IsolatedImageCasProbeClient.ValidateResult(valid with { Frames = null! }, "source_image", 128));
+        var parserException = Assert.Throws<ImageCasProbeException>(() =>
+            IsolatedImageCasProbeClient.ValidateResult(valid with { Parser = null! }, "source_image", 128));
+        var privacyException = Assert.Throws<ImageCasProbeException>(() =>
+            IsolatedImageCasProbeClient.ValidateResult(valid with { Privacy = null! }, "source_image", 128));
+
+        Assert.AreEqual("cas_image_probe_response_invalid", framesException.Code);
+        Assert.AreEqual("cas_image_probe_response_invalid", parserException.Code);
+        Assert.AreEqual("cas_image_probe_response_invalid", privacyException.Code);
+    }
+
+    [TestMethod]
+    public void ValidateResult_RejectsUnknownReasonCodeFromChild()
+    {
+        var invalid = CreateCompletedJpegResult(128) with
+        {
+            Status = "blocked",
+            Container = "unknown",
+            StructureState = "blocked",
+            DecodeState = "not_decoded",
+            Frames = [],
+            ReasonCodes = ["private_path_or_hash"]
+        };
+
+        var exception = Assert.Throws<ImageCasProbeException>(() =>
+            IsolatedImageCasProbeClient.ValidateResult(invalid, "source_image", 128));
+
+        Assert.AreEqual("cas_image_probe_response_invalid", exception.Code);
+    }
+
+    [TestMethod]
+    public void ValidateResult_RejectsFrameRangeOutsideFormalObject()
+    {
+        var invalid = CreateCompletedJpegResult(128) with
+        {
+            Frames =
+            [
+                new ImageProbeCasImageFrame(0, "jpeg", 0, 129, 2, 1, 8, null, "decoded")
+            ]
+        };
+
+        var exception = Assert.Throws<ImageCasProbeException>(() =>
+            IsolatedImageCasProbeClient.ValidateResult(invalid, "source_image", 128));
+
+        Assert.AreEqual("cas_image_probe_response_invalid", exception.Code);
+    }
+
+    [TestMethod]
     public void ProductStartInfo_UsesFixedProbePathAndOnlyStdioArgument()
     {
         var startInfo = IsolatedImageCasProbeClient.CreateProductStartInfo();
@@ -294,6 +381,39 @@ public sealed class ImageCasProbeTests
         observedArguments?.Add(ImageProbeProtocol.StdioArgument);
         return startInfo;
     }
+
+    private static ProcessStartInfo CreateContinuousOutputStartInfo(bool writeToStandardError)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = Path.Combine(Environment.SystemDirectory, "cmd.exe")
+        };
+        startInfo.ArgumentList.Add("/d");
+        startInfo.ArgumentList.Add("/q");
+        startInfo.ArgumentList.Add("/c");
+        startInfo.ArgumentList.Add(
+            "for /L %i in (1,1,1000000) do @echo 0123456789abcdef0123456789abcdef" +
+            (writeToStandardError ? " 1>&2" : string.Empty));
+        return startInfo;
+    }
+
+    private static ImageProbeCasImageResult CreateCompletedJpegResult(long objectByteLength) =>
+        new(
+            ImageProbeProtocol.CasImageV1,
+            ImageProbeProtocol.CasImageProfile,
+            "completed",
+            "source_image",
+            "jpeg",
+            "validated",
+            "decoded",
+            [new ImageProbeCasImageFrame(0, "jpeg", 0, objectByteLength, 2, 1, 8, null, "decoded")],
+            [],
+            new ImageProbeCasImageParserIdentity(
+                "qiongtu.cas-image",
+                "1.0.0",
+                "magick.net-q16-x64",
+                "14.16.0"),
+            new ImageProbePrivacy(false, false, false, false, false, false, false, false));
 
     private static string FindRepositoryRoot()
     {

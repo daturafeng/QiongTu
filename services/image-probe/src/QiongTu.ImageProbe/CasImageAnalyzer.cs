@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Reflection;
 using ImageMagick;
 using ImageMagick.Configuration;
 using QiongTu.Contracts;
@@ -20,7 +21,10 @@ internal static class CasImageAnalyzer
             VerifyFormalObject(stream, header);
             var structure = CasImageStructureParser.Parse(stream);
             using var runtime = MagickProbeRuntime.Create();
-            if (!MagickNET.Version.Contains(RequiredNativeDecoderVersion, StringComparison.Ordinal))
+            var informationalVersion = typeof(MagickNET).Assembly
+                .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+                .InformationalVersion;
+            if (!IsRequiredNativeDecoderVersion(informationalVersion))
             {
                 return Blocked("native_decoder_version_mismatch", structure.Container);
             }
@@ -77,6 +81,20 @@ internal static class CasImageAnalyzer
         CreateResult("failed", "unknown", "unavailable", "not_run", reasonCode);
 
     internal static IDisposable CreateNativeRuntimeForTests() => MagickProbeRuntime.Create();
+
+    internal static bool IsRequiredNativeDecoderVersion(string? informationalVersion)
+    {
+        if (string.IsNullOrWhiteSpace(informationalVersion))
+        {
+            return false;
+        }
+
+        var metadataIndex = informationalVersion.IndexOf('+');
+        var semanticVersion = metadataIndex >= 0
+            ? informationalVersion[..metadataIndex]
+            : informationalVersion;
+        return string.Equals(semanticVersion, RequiredNativeDecoderVersion, StringComparison.Ordinal);
+    }
 
     private static ImageProbeCasImageResult Blocked(string reasonCode, string container = "unknown") =>
         CreateResult("blocked", container, "blocked", "not_decoded", reasonCode);

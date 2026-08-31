@@ -38,6 +38,100 @@ internal interface IImageCasProbeClient
 internal sealed class IsolatedImageCasProbeClient : IImageCasProbeClient
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+    private static readonly HashSet<string> KnownProbeReasonCodes = new(StringComparer.Ordinal)
+    {
+        "bigtiff_not_supported",
+        "container_header_truncated",
+        "formal_object_integrity_failed",
+        "formal_object_namespace_invalid",
+        "formal_object_reparse_detected",
+        "formal_object_root_invalid",
+        "formal_object_unavailable",
+        "frame_pixel_limit_exceeded",
+        "header_json_invalid",
+        "header_too_large",
+        "invalid_header",
+        "invalid_invocation",
+        "invalid_object_kind",
+        "jpeg_app2_truncated",
+        "jpeg_dimensions_invalid",
+        "jpeg_dnl_not_supported",
+        "jpeg_eoi_missing",
+        "jpeg_marker_limit_exceeded",
+        "jpeg_marker_order_invalid",
+        "jpeg_marker_prefix_missing",
+        "jpeg_marker_truncated",
+        "jpeg_metadata_limit_exceeded",
+        "jpeg_range_length_mismatch",
+        "jpeg_range_out_of_bounds",
+        "jpeg_required_marker_missing",
+        "jpeg_scan_truncated",
+        "jpeg_segment_length_invalid",
+        "jpeg_segment_out_of_bounds",
+        "jpeg_segment_truncated",
+        "jpeg_sof_conflict",
+        "jpeg_sof_invalid",
+        "jpeg_sof_missing",
+        "jpeg_soi_missing",
+        "jpeg_stuffed_byte_outside_scan",
+        "jpeg_trailing_data",
+        "jpeg_truncated",
+        "mpf_dependency_invalid",
+        "mpf_entries_invalid",
+        "mpf_entries_out_of_bounds",
+        "mpf_header_invalid",
+        "mpf_ifd_entry_limit_exceeded",
+        "mpf_ifd_out_of_bounds",
+        "mpf_image_count_invalid",
+        "mpf_image_format_not_supported",
+        "mpf_multiple_indexes",
+        "mpf_primary_offset_invalid",
+        "mpf_range_out_of_bounds",
+        "mpf_ranges_overlap",
+        "mpf_type_not_supported",
+        "mpf_unreferenced_trailing_data",
+        "mpf_version_invalid",
+        "native_decode_failed",
+        "native_decoder_version_mismatch",
+        "native_policy_blocked",
+        "native_resource_limit_exceeded",
+        "object_key_invalid",
+        "object_size_out_of_range",
+        "parser_decoder_dimension_disagreement",
+        "parser_decoder_frame_count_disagreement",
+        "probe_argument_invalid",
+        "probe_invalid_operation",
+        "probe_io_failed",
+        "probe_output_limit_exceeded",
+        "probe_overflow",
+        "expected_hash_invalid",
+        "structure_arithmetic_overflow",
+        "tiff_bits_invalid",
+        "tiff_compression_invalid",
+        "tiff_compression_not_supported",
+        "tiff_duplicate_tag",
+        "tiff_field_type_invalid",
+        "tiff_header_invalid",
+        "tiff_height_invalid",
+        "tiff_ifd_cycle",
+        "tiff_ifd_entry_limit_exceeded",
+        "tiff_ifd_out_of_bounds",
+        "tiff_metadata_limit_exceeded",
+        "tiff_orientation_invalid",
+        "tiff_page_limit_exceeded",
+        "tiff_page_missing",
+        "tiff_photometric_invalid",
+        "tiff_photometric_not_supported",
+        "tiff_pixel_range_out_of_bounds",
+        "tiff_pixel_ranges_invalid",
+        "tiff_pixel_ranges_overlap",
+        "tiff_value_out_of_bounds",
+        "tiff_width_invalid",
+        "total_pixel_limit_exceeded",
+        "trailing_input",
+        "unsupported_image_container",
+        "unsupported_protocol"
+    };
 
     private readonly Func<ProcessStartInfo> _startInfoFactory;
     private readonly ImageCasProbeOptions _options;
@@ -117,7 +211,12 @@ internal sealed class IsolatedImageCasProbeClient : IImageCasProbeClient
         Directory.CreateDirectory(privateRuntimeRoot);
         try
         {
-            return await RunProbeAsync(request, objectKind, privateRuntimeRoot, cancellationToken);
+            return await RunProbeAsync(
+                request,
+                objectKind,
+                verified.ByteLength,
+                privateRuntimeRoot,
+                cancellationToken);
         }
         finally
         {
@@ -139,6 +238,7 @@ internal sealed class IsolatedImageCasProbeClient : IImageCasProbeClient
     private async Task<ImageProbeCasImageResult> RunProbeAsync(
         byte[] request,
         string objectKind,
+        long objectByteLength,
         string privateRuntimeRoot,
         CancellationToken cancellationToken)
     {
@@ -191,13 +291,35 @@ internal sealed class IsolatedImageCasProbeClient : IImageCasProbeClient
                 _options.MaximumErrorBytes,
                 "cas_image_probe_error_limit_exceeded",
                 timeout.Token);
+            var inputTask = WriteRequestAsync(
+                process.StandardInput.BaseStream,
+                request,
+                timeout.Token);
 
             try
             {
-                await process.StandardInput.BaseStream.WriteAsync(request, timeout.Token);
-                await process.StandardInput.BaseStream.FlushAsync(timeout.Token);
-                process.StandardInput.Close();
-                await process.WaitForExitAsync(timeout.Token);
+                var exitTask = process.WaitForExitAsync(timeout.Token);
+                var pending = new HashSet<Task> { exitTask, inputTask, outputTask, errorTask };
+                while (!exitTask.IsCompleted)
+                {
+                    var completed = await Task.WhenAny(pending);
+                    pending.Remove(completed);
+                    if (completed == exitTask)
+                    {
+                        await exitTask;
+                        break;
+                    }
+
+                    await completed;
+                }
+
+                await exitTask;
+                await inputTask;
+            }
+            catch (ImageCasProbeException)
+            {
+                TryKill(process);
+                throw;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -265,7 +387,7 @@ internal sealed class IsolatedImageCasProbeClient : IImageCasProbeClient
                     exception);
             }
 
-            ValidateResult(result, objectKind);
+            ValidateResult(result, objectKind, objectByteLength);
             return result;
         }
     }
@@ -329,9 +451,34 @@ internal sealed class IsolatedImageCasProbeClient : IImageCasProbeClient
         }
     }
 
-    private static void ValidateResult(ImageProbeCasImageResult result, string objectKind)
+    private static async Task WriteRequestAsync(
+        Stream stream,
+        byte[] request,
+        CancellationToken cancellationToken)
     {
-        var valid = result.SchemaVersion == ImageProbeProtocol.CasImageV1 &&
+        await stream.WriteAsync(request, cancellationToken);
+        await stream.FlushAsync(cancellationToken);
+        stream.Close();
+    }
+
+    internal static void ValidateResult(
+        ImageProbeCasImageResult result,
+        string objectKind,
+        long objectByteLength)
+    {
+        if (result is null)
+        {
+            throw new ImageCasProbeException(
+                "cas_image_probe_response_invalid",
+                "The isolated CAS image probe returned an invalid response.");
+        }
+
+        var valid = objectByteLength is > 0 and <= ImageProbeProtocol.MaximumCasObjectBytes &&
+                    result.Frames is not null &&
+                    result.ReasonCodes is not null &&
+                    result.Parser is not null &&
+                    result.Privacy is not null &&
+                    result.SchemaVersion == ImageProbeProtocol.CasImageV1 &&
                     result.Profile == ImageProbeProtocol.CasImageProfile &&
                     result.ObjectKind == objectKind &&
                     result.Status is "completed" or "blocked" &&
@@ -351,8 +498,11 @@ internal sealed class IsolatedImageCasProbeClient : IImageCasProbeClient
                     !result.Privacy.RawMetadataIncluded &&
                     !result.Privacy.SerialNumbersIncluded &&
                     !result.Privacy.CoordinatesIncluded &&
-                    !result.Privacy.OwnerSampleStatisticsIncluded;
-        if (!valid || !ValidateFrames(result))
+                    !result.Privacy.OwnerSampleStatisticsIncluded &&
+                    result.ReasonCodes.All(reason =>
+                        reason is not null && KnownProbeReasonCodes.Contains(reason)) &&
+                    result.ReasonCodes.Distinct(StringComparer.Ordinal).Count() == result.ReasonCodes.Count;
+        if (!valid || !ValidateFrames(result, objectByteLength))
         {
             throw new ImageCasProbeException(
                 "cas_image_probe_response_invalid",
@@ -360,39 +510,123 @@ internal sealed class IsolatedImageCasProbeClient : IImageCasProbeClient
         }
     }
 
-    private static bool ValidateFrames(ImageProbeCasImageResult result)
+    private static bool ValidateFrames(ImageProbeCasImageResult result, long objectByteLength)
     {
-        if (result.Status == "completed" && (result.Frames.Count == 0 || result.ReasonCodes.Count != 0) ||
-            result.Status == "blocked" && (result.Frames.Count != 0 || result.ReasonCodes.Count == 0))
+        if (result.Status == "blocked")
+        {
+            return result.Frames.Count == 0 &&
+                   result.ReasonCodes.Count > 0 &&
+                   result.StructureState == "blocked" &&
+                   result.DecodeState == "not_decoded";
+        }
+
+        if (result.Status != "completed" ||
+            result.Frames.Count == 0 ||
+            result.ReasonCodes.Count != 0 ||
+            result.StructureState != "validated" ||
+            result.DecodeState != "decoded" ||
+            result.Container is not ("jpeg" or "mpo" or "tiff"))
         {
             return false;
         }
 
-        long totalPixels = 0;
-        for (var index = 0; index < result.Frames.Count; index++)
+        try
         {
-            var frame = result.Frames[index];
-            if (frame.FrameIndex != index ||
-                frame.FrameKind is not ("jpeg" or "mp_primary_image" or "mp_auxiliary_image" or "tiff_page") ||
-                frame.ByteOffset < 0 || frame.ByteLength < 0 ||
-                frame.Width <= 0 || frame.Height <= 0 || frame.BitsPerChannel <= 0 ||
-                frame.DecodeState != "decoded" ||
-                frame.Orientation is < 1 or > 8)
+            long totalPixels = 0;
+            for (var index = 0; index < result.Frames.Count; index++)
+            {
+                var frame = result.Frames[index];
+                if (frame is null ||
+                    frame.FrameIndex != index ||
+                    frame.FrameKind is not ("jpeg" or "mp_primary_image" or "mp_auxiliary_image" or "tiff_page") ||
+                    frame.ByteOffset < 0 || frame.ByteLength < 0 ||
+                    frame.Width <= 0 || frame.Height <= 0 || frame.BitsPerChannel is <= 0 or > 64 ||
+                    frame.DecodeState != "decoded" ||
+                    frame.Orientation is < 1 or > 8)
+                {
+                    return false;
+                }
+
+                var pixels = checked((long)frame.Width * frame.Height);
+                if (pixels > ImageProbeProtocol.MaximumCasPixelsPerFrame)
+                {
+                    return false;
+                }
+
+                totalPixels = checked(totalPixels + pixels);
+            }
+
+            if (totalPixels > ImageProbeProtocol.MaximumCasTotalPixels)
             {
                 return false;
             }
 
-            var pixels = checked((long)frame.Width * frame.Height);
-            if (pixels > ImageProbeProtocol.MaximumCasPixelsPerFrame)
+            return result.Container switch
             {
-                return false;
-            }
+                "jpeg" => ValidateJpegFrames(result.Frames, objectByteLength),
+                "mpo" => ValidateMpoFrames(result.Frames, objectByteLength),
+                "tiff" => ValidateTiffFrames(result.Frames, objectByteLength),
+                _ => false
+            };
+        }
+        catch (OverflowException)
+        {
+            return false;
+        }
+    }
 
-            totalPixels = checked(totalPixels + pixels);
+    private static bool ValidateJpegFrames(
+        IReadOnlyList<ImageProbeCasImageFrame> frames,
+        long objectByteLength) =>
+        frames.Count == 1 &&
+        frames[0].FrameKind == "jpeg" &&
+        frames[0].ByteOffset == 0 &&
+        frames[0].ByteLength == objectByteLength &&
+        frames[0].Orientation is null;
+
+    private static bool ValidateMpoFrames(
+        IReadOnlyList<ImageProbeCasImageFrame> frames,
+        long objectByteLength)
+    {
+        if (frames.Count < 2 ||
+            frames[0].FrameKind != "mp_primary_image" ||
+            frames[0].ByteOffset != 0 ||
+            frames.Any(frame => frame.ByteLength <= 0 || frame.Orientation is not null) ||
+            frames.Skip(1).Any(frame => frame.FrameKind != "mp_auxiliary_image"))
+        {
+            return false;
         }
 
-        return totalPixels <= ImageProbeProtocol.MaximumCasTotalPixels;
+        var ranges = frames
+            .Select(frame => (frame.ByteOffset, End: checked(frame.ByteOffset + frame.ByteLength)))
+            .OrderBy(range => range.ByteOffset)
+            .ToArray();
+        if (ranges[0].ByteOffset != 0 || ranges[^1].End != objectByteLength ||
+            ranges.Any(range => range.End > objectByteLength))
+        {
+            return false;
+        }
+
+        for (var index = 1; index < ranges.Length; index++)
+        {
+            if (ranges[index].ByteOffset < ranges[index - 1].End)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
+
+    private static bool ValidateTiffFrames(
+        IReadOnlyList<ImageProbeCasImageFrame> frames,
+        long objectByteLength) =>
+        frames.All(frame =>
+            frame.FrameKind == "tiff_page" &&
+            frame.ByteLength == 0 &&
+            frame.ByteOffset >= 0 &&
+            frame.ByteOffset < objectByteLength &&
+            frame.Orientation is >= 1 and <= 8);
 
     private static string ClassifyChildFailure(ReadOnlySpan<byte> output, ReadOnlySpan<byte> error)
     {
@@ -400,7 +634,9 @@ internal sealed class IsolatedImageCasProbeClient : IImageCasProbeClient
         {
             var result = JsonSerializer.Deserialize<ImageProbeCasImageResult>(output, SerializerOptions);
             var reason = result?.ReasonCodes.FirstOrDefault();
-            if (result?.Status == "failed" && IsSafeCode(reason))
+            if (result?.Status == "failed" &&
+                IsSafeCode(reason) &&
+                KnownProbeReasonCodes.Contains(reason!))
             {
                 return "cas_image_probe_child_" + reason;
             }

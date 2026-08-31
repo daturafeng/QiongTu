@@ -53,6 +53,20 @@ public sealed class CasImageAnalyzerTests
     }
 
     [TestMethod]
+    public void Analyze_StandardMpfGapBetweenImages_IsNotDecodedAsPayload()
+    {
+        var withGap = AddMpfInterImageGap(ValidMpo, 32);
+
+        var result = AnalyzeFormalObject(withGap);
+
+        Assert.AreEqual("completed", result.Status, string.Join(',', result.ReasonCodes));
+        Assert.AreEqual("mpo", result.Container);
+        Assert.HasCount(2, result.Frames);
+        Assert.AreEqual(32, result.Frames[1].ByteOffset - result.Frames[0].ByteLength);
+        AssertPrivacy(result);
+    }
+
+    [TestMethod]
     public void Analyze_ValidClassicTiff_CrossChecksIfdAndDecodedPage()
     {
         var result = AnalyzeFormalObject(ValidTiff);
@@ -134,6 +148,89 @@ public sealed class CasImageAnalyzerTests
     }
 
     [TestMethod]
+    public void Analyze_MpfTrailingPayload_ReturnsStableBlockedReason()
+    {
+        var malformed = ValidMpo.Concat("<svg/>"u8.ToArray()).ToArray();
+
+        var result = AnalyzeFormalObject(malformed);
+
+        Assert.AreEqual("blocked", result.Status);
+        CollectionAssert.Contains(result.ReasonCodes.ToArray(), "mpf_unreferenced_trailing_data");
+        AssertPrivacy(result);
+    }
+
+    [TestMethod]
+    public void Analyze_MpfNonJpegImageFormat_ReturnsStableBlockedReason()
+    {
+        var malformed = ValidMpo.ToArray();
+        var secondAttribute = FindMpfEntryTable(malformed) + 16;
+        BinaryPrimitives.WriteUInt32LittleEndian(
+            malformed.AsSpan(secondAttribute, 4),
+            0x0700_0000 | 0x020003);
+
+        var result = AnalyzeFormalObject(malformed);
+
+        Assert.AreEqual("blocked", result.Status);
+        CollectionAssert.Contains(result.ReasonCodes.ToArray(), "mpf_image_format_not_supported");
+        AssertPrivacy(result);
+    }
+
+    [TestMethod]
+    public void Analyze_MpfUnknownImageType_ReturnsStableBlockedReason()
+    {
+        var malformed = ValidMpo.ToArray();
+        var secondAttribute = FindMpfEntryTable(malformed) + 16;
+        BinaryPrimitives.WriteUInt32LittleEndian(malformed.AsSpan(secondAttribute, 4), 0x0000ff);
+
+        var result = AnalyzeFormalObject(malformed);
+
+        Assert.AreEqual("blocked", result.Status);
+        CollectionAssert.Contains(result.ReasonCodes.ToArray(), "mpf_type_not_supported");
+        AssertPrivacy(result);
+    }
+
+    [TestMethod]
+    public void Analyze_MpfVersionOtherThan0100_ReturnsStableBlockedReason()
+    {
+        var malformed = ValidMpo.ToArray();
+        "9999"u8.CopyTo(malformed.AsSpan(FindMpfVersionValue(malformed), 4));
+
+        var result = AnalyzeFormalObject(malformed);
+
+        Assert.AreEqual("blocked", result.Status);
+        CollectionAssert.Contains(result.ReasonCodes.ToArray(), "mpf_version_invalid");
+        AssertPrivacy(result);
+    }
+
+    [TestMethod]
+    public void Analyze_JpegDeferredHeightMarker_IsExplicitlyUnsupported()
+    {
+        var malformed = ValidJpeg.ToArray();
+        var sof = FindMarker(malformed, 0xc0);
+        malformed[sof + 5] = 0;
+        malformed[sof + 6] = 0;
+
+        var result = AnalyzeFormalObject(malformed);
+
+        Assert.AreEqual("blocked", result.Status);
+        CollectionAssert.Contains(result.ReasonCodes.ToArray(), "jpeg_dnl_not_supported");
+        AssertPrivacy(result);
+    }
+
+    [TestMethod]
+    public void Analyze_MpoAggregateMetadataOverBudget_ReturnsStableBlockedReason()
+    {
+        var metadataHeavyPrimary = AddJpegApplicationSegments(ValidJpeg, 129);
+        var metadataHeavyAuxiliary = AddJpegApplicationSegments(AuxiliaryJpeg, 129);
+
+        var result = AnalyzeFormalObject(CreateMpo(metadataHeavyPrimary, metadataHeavyAuxiliary));
+
+        Assert.AreEqual("blocked", result.Status);
+        CollectionAssert.Contains(result.ReasonCodes.ToArray(), "jpeg_metadata_limit_exceeded");
+        AssertPrivacy(result);
+    }
+
+    [TestMethod]
     public void Analyze_BigTiffHeader_IsRecognizedAndExplicitlyBlocked()
     {
         var bigTiffHeader = new byte[]
@@ -163,15 +260,35 @@ public sealed class CasImageAnalyzerTests
     }
 
     [TestMethod]
-    public void NativePolicy_DeniesNonAllowlistedCoderAndExternalInterpretation()
+    public void NativePolicy_DeniesNonAllowlistedCodersAndDelegates()
     {
         using var runtime = CasImageAnalyzer.CreateNativeRuntimeForTests();
-        var disguisedSvg = "<svg xmlns=\"http://www.w3.org/2000/svg\"><rect width=\"1\" height=\"1\"/></svg>"u8.ToArray();
-
-        _ = Assert.Throws<MagickPolicyErrorException>(() =>
+        var forbiddenInputs = new[]
         {
-            using var image = new MagickImage(disguisedSvg);
-        });
+            Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII="),
+            "%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF"u8.ToArray(),
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"><rect width=\"1\" height=\"1\"/></svg>"u8.ToArray()
+        };
+
+        foreach (var input in forbiddenInputs)
+        {
+            _ = Assert.Throws<MagickPolicyErrorException>(() =>
+            {
+                using var image = new MagickImage(input);
+            });
+        }
+    }
+
+    [TestMethod]
+    [DataRow("14.16.0", true)]
+    [DataRow("14.16.0+build", true)]
+    [DataRow("14.16.0.1", false)]
+    [DataRow("14.16.0-preview", false)]
+    [DataRow("114.16.0", false)]
+    [DataRow(null, false)]
+    public void NativeDecoderVersion_RequiresExactPinnedSemanticVersion(string? version, bool expected)
+    {
+        Assert.AreEqual(expected, CasImageAnalyzer.IsRequiredNativeDecoderVersion(version));
     }
 
     [TestMethod]
@@ -394,6 +511,65 @@ public sealed class CasImageAnalyzerTests
         var thirdEntry = tiffBase + ifdOffset + 2 + (2 * 12);
         var entryOffset = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(thirdEntry + 8, 4)));
         return tiffBase + entryOffset;
+    }
+
+    private static int FindMpfVersionValue(byte[] bytes)
+    {
+        var mpf = bytes.AsSpan().IndexOf("MPF\0"u8);
+        Assert.IsGreaterThanOrEqualTo(0, mpf);
+        var tiffBase = mpf + 4;
+        var ifdOffset = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(tiffBase + 4, 4)));
+        return checked(tiffBase + ifdOffset + 2 + 8);
+    }
+
+    private static int FindMarker(byte[] bytes, byte marker)
+    {
+        for (var index = 0; index < bytes.Length - 1; index++)
+        {
+            if (bytes[index] == 0xff && bytes[index + 1] == marker)
+            {
+                return index;
+            }
+        }
+
+        Assert.Fail($"JPEG marker 0x{marker:x2} was not found.");
+        return -1;
+    }
+
+    private static byte[] AddJpegApplicationSegments(byte[] jpeg, int count)
+    {
+        const int payloadLength = ushort.MaxValue - 2;
+        const int segmentLength = 2 + 2 + payloadLength;
+        var result = new byte[checked(jpeg.Length + (count * segmentLength))];
+        jpeg.AsSpan(0, 2).CopyTo(result);
+        var writeOffset = 2;
+        for (var index = 0; index < count; index++)
+        {
+            result[writeOffset] = 0xff;
+            result[writeOffset + 1] = 0xe1;
+            BinaryPrimitives.WriteUInt16BigEndian(result.AsSpan(writeOffset + 2, 2), ushort.MaxValue);
+            result.AsSpan(writeOffset + 4, payloadLength).Fill((byte)(index + 1));
+            writeOffset += segmentLength;
+        }
+
+        jpeg.AsSpan(2).CopyTo(result.AsSpan(writeOffset));
+        return result;
+    }
+
+    private static byte[] AddMpfInterImageGap(byte[] mpo, int gapLength)
+    {
+        var secondImageOffset = mpo.Length - AuxiliaryJpeg.Length;
+        var result = new byte[checked(mpo.Length + gapLength)];
+        mpo.AsSpan(0, secondImageOffset).CopyTo(result);
+        result.AsSpan(secondImageOffset, gapLength).Fill(0xa5);
+        mpo.AsSpan(secondImageOffset).CopyTo(result.AsSpan(secondImageOffset + gapLength));
+
+        var secondOffsetField = FindMpfEntryTable(result) + 16 + 8;
+        var relativeOffset = BinaryPrimitives.ReadUInt32LittleEndian(result.AsSpan(secondOffsetField, 4));
+        BinaryPrimitives.WriteUInt32LittleEndian(
+            result.AsSpan(secondOffsetField, 4),
+            checked(relativeOffset + (uint)gapLength));
+        return result;
     }
 
     private static void AssertPrivacy(ImageProbeCasImageResult result)

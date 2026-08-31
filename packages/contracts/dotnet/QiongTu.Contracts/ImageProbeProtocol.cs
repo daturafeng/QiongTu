@@ -72,6 +72,10 @@ public sealed record ImageProbeCasImageRequestHeader(
     string ExpectedSha256,
     long ExpectedByteLength);
 
+/// <summary>
+/// JPEG/MPO offsets describe a byte-exact JPEG range. TIFF page offsets identify the
+/// page IFD and use a zero byte length because a page can span multiple strips or tiles.
+/// </summary>
 public sealed record ImageProbeCasImageFrame(
     int FrameIndex,
     string FrameKind,

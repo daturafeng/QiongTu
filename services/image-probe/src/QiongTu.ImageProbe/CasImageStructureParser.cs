@@ -89,6 +89,7 @@ internal static class CasImageStructureParser
         var entries = ParseMpfEntries(stream, first.Mpf, stream.Length);
         var frames = new List<CasImageFrameStructure>(entries.Count);
         long totalPixels = 0;
+        long totalMetadataBytes = 0;
         for (var index = 0; index < entries.Count; index++)
         {
             var entry = entries[index];
@@ -111,6 +112,12 @@ internal static class CasImageStructureParser
             if (totalPixels > QiongTu.Contracts.ImageProbeProtocol.MaximumCasTotalPixels)
             {
                 throw new CasImageStructureException("total_pixel_limit_exceeded");
+            }
+
+            totalMetadataBytes = checked(totalMetadataBytes + parsed.MetadataBytes);
+            if (totalMetadataBytes > QiongTu.Contracts.ImageProbeProtocol.MaximumCasMetadataBytes)
+            {
+                throw new CasImageStructureException("jpeg_metadata_limit_exceeded");
             }
         }
 
@@ -143,6 +150,7 @@ internal static class CasImageStructureParser
         int width = 0;
         int height = 0;
         int bitsPerChannel = 0;
+        long metadataBytes = 0;
         MpfSegment? mpf = null;
         byte? pendingMarker = null;
         Span<byte> sof = stackalloc byte[5];
@@ -179,7 +187,12 @@ internal static class CasImageStructureParser
                     throw new CasImageStructureException("jpeg_range_length_mismatch");
                 }
 
-                return new ParsedJpegFrame(cursor.Position, width, height, bitsPerChannel, mpf);
+                return new ParsedJpegFrame(cursor.Position, width, height, bitsPerChannel, metadataBytes, mpf);
+            }
+
+            if (marker == 0xdc)
+            {
+                throw new CasImageStructureException("jpeg_dnl_not_supported");
             }
 
             if (marker == 0xd8 || marker is >= 0xd0 and <= 0xd7 || marker == 0x01)
@@ -201,6 +214,15 @@ internal static class CasImageStructureParser
                 throw new CasImageStructureException("jpeg_segment_out_of_bounds");
             }
 
+            if (marker is >= 0xe0 and <= 0xef || marker == 0xfe)
+            {
+                metadataBytes = checked(metadataBytes + dataLength);
+                if (metadataBytes > QiongTu.Contracts.ImageProbeProtocol.MaximumCasMetadataBytes)
+                {
+                    throw new CasImageStructureException("jpeg_metadata_limit_exceeded");
+                }
+            }
+
             if (IsStartOfFrame(marker))
             {
                 if (dataLength < 6)
@@ -212,7 +234,12 @@ internal static class CasImageStructureParser
                 var candidateBits = sof[0];
                 var candidateHeight = BinaryPrimitives.ReadUInt16BigEndian(sof[1..3]);
                 var candidateWidth = BinaryPrimitives.ReadUInt16BigEndian(sof[3..5]);
-                if (candidateBits == 0 || candidateWidth == 0 || candidateHeight == 0)
+                if (candidateHeight == 0)
+                {
+                    throw new CasImageStructureException("jpeg_dnl_not_supported");
+                }
+
+                if (candidateBits == 0 || candidateWidth == 0)
                 {
                     throw new CasImageStructureException("jpeg_dimensions_invalid");
                 }
@@ -341,6 +368,7 @@ internal static class CasImageStructureParser
         uint? entriesOffset = null;
         uint? entriesByteCount = null;
         var sawVersion = false;
+        Span<byte> version = stackalloc byte[4];
         for (var index = 0; index < count; index++)
         {
             var entryOffset = checked((long)ifdOffset + 2 + (index * 12L));
@@ -351,6 +379,12 @@ internal static class CasImageStructureParser
             if (tag == 0xb000)
             {
                 if (sawVersion || type != 7 || valueCount != 4)
+                {
+                    throw new CasImageStructureException("mpf_version_invalid");
+                }
+
+                tiff.ReadBytes(entryOffset + 8, version, "mpf_version_invalid");
+                if (!version.SequenceEqual("0100"u8))
                 {
                     throw new CasImageStructureException("mpf_version_invalid");
                 }
@@ -389,7 +423,19 @@ internal static class CasImageStructureParser
         for (var index = 0; index < numberOfImages; index++)
         {
             var offset = checked((long)entriesOffset.Value + (index * 16L));
-            _ = tiff.ReadUInt32(offset, "mpf_entries_out_of_bounds");
+            var attribute = tiff.ReadUInt32(offset, "mpf_entries_out_of_bounds");
+            if (((attribute >> 24) & 0x07) != 0)
+            {
+                throw new CasImageStructureException("mpf_image_format_not_supported");
+            }
+
+            var mpType = attribute & 0x00ff_ffff;
+            if (mpType is not (0x000000 or 0x010001 or 0x010002 or 0x020001 or
+                0x020002 or 0x020003 or 0x030000))
+            {
+                throw new CasImageStructureException("mpf_type_not_supported");
+            }
+
             var size = tiff.ReadUInt32(offset + 4, "mpf_entries_out_of_bounds");
             var relativeDataOffset = tiff.ReadUInt32(offset + 8, "mpf_entries_out_of_bounds");
             var dependentImage1 = tiff.ReadUInt16(offset + 12, "mpf_entries_out_of_bounds");
@@ -419,6 +465,12 @@ internal static class CasImageStructureParser
             {
                 throw new CasImageStructureException("mpf_ranges_overlap");
             }
+        }
+
+        if (ordered[0].Offset != 0 ||
+            checked(ordered[^1].Offset + ordered[^1].Length) != objectLength)
+        {
+            throw new CasImageStructureException("mpf_unreferenced_trailing_data");
         }
 
         return result;
@@ -484,13 +536,6 @@ internal static class CasImageStructureParser
             {
                 var entryOffset = checked((long)nextIfd + 2 + (index * 12L));
                 var tag = reader.ReadUInt16(entryOffset, "tiff_ifd_out_of_bounds");
-                if (tag is not (TiffTagImageWidth or TiffTagImageHeight or TiffTagBitsPerSample or TiffTagCompression or
-                    TiffTagPhotometric or TiffTagStripOffsets or TiffTagOrientation or
-                    TiffTagStripByteCounts or TiffTagTileOffsets or TiffTagTileByteCounts))
-                {
-                    continue;
-                }
-
                 var type = reader.ReadUInt16(entryOffset + 2, "tiff_ifd_out_of_bounds");
                 var count = reader.ReadUInt32(entryOffset + 4, "tiff_ifd_out_of_bounds");
                 var valueOffset = entryOffset + 8;
@@ -510,7 +555,17 @@ internal static class CasImageStructureParser
                     throw new CasImageStructureException("tiff_metadata_limit_exceeded");
                 }
 
-                values[tag] = new TiffValue(type, count, dataOffset);
+                if (tag is not (TiffTagImageWidth or TiffTagImageHeight or TiffTagBitsPerSample or TiffTagCompression or
+                    TiffTagPhotometric or TiffTagStripOffsets or TiffTagOrientation or
+                    TiffTagStripByteCounts or TiffTagTileOffsets or TiffTagTileByteCounts))
+                {
+                    continue;
+                }
+
+                if (!values.TryAdd(tag, new TiffValue(type, count, dataOffset)))
+                {
+                    throw new CasImageStructureException("tiff_duplicate_tag");
+                }
             }
 
             var width = ReadRequiredPositiveInt(values, TiffTagImageWidth, reader, "tiff_width_invalid");
@@ -688,7 +743,7 @@ internal static class CasImageStructureParser
     {
         1 or 2 or 6 or 7 => 1,
         3 or 8 => 2,
-        4 or 9 or 11 => 4,
+        4 or 9 or 11 or 13 => 4,
         5 or 10 or 12 => 8,
         _ => throw new CasImageStructureException("tiff_field_type_invalid")
     };
@@ -728,6 +783,7 @@ internal static class CasImageStructureParser
         int Width,
         int Height,
         int BitsPerChannel,
+        long MetadataBytes,
         MpfSegment? Mpf);
 
     private sealed record MpfSegment(long Offset, long Length);
@@ -854,6 +910,9 @@ internal static class CasImageStructureParser
                 ? BinaryPrimitives.ReadUInt32LittleEndian(value)
                 : BinaryPrimitives.ReadUInt32BigEndian(value);
         }
+
+        public void ReadBytes(long relativeOffset, Span<byte> destination, string code) =>
+            Read(relativeOffset, destination, code);
 
         public void RequireRange(long relativeOffset, long length, string code)
         {

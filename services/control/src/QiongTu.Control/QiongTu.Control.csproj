@@ -23,6 +23,9 @@
     <MSBuild
       Projects="..\..\..\image-probe\src\QiongTu.ImageProbe\QiongTu.ImageProbe.csproj"
       Targets="Publish"
-      Properties="Configuration=$(Configuration);RuntimeIdentifier=win-x64;PublishDir=$(ImageProbePublishDirectory);SkipImageProbePublish=true" />
+      Properties="Configuration=$(Configuration);RuntimeIdentifier=win-x64;PublishDir=$(ImageProbePublishDirectory);SelfContained=true;PublishSingleFile=true;IncludeNativeLibrariesForSelfExtract=true;RestoreLockedMode=true;SkipImageProbePublish=true" />
+    <Error
+      Condition="!Exists('$(ImageProbePublishDirectory)QiongTu.ImageProbe.exe')"
+      Text="The isolated CAS image probe was not published to the fixed image-probe product directory." />
   </Target>
 </Project>

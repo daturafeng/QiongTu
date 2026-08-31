@@ -29,7 +29,8 @@ public sealed class BusinessDatabaseTests
             "projects", "datasets", "dataset_versions", "file_objects", "images", "image_frames",
             "image_metadata_fields", "positioning_aux_files", "positioning_aux_usage", "processing_jobs", "job_executions",
             "job_events", "result_series", "results", "result_files", "result_dependencies",
-            "quality_reports", "quality_findings", "image_import_sessions", "image_import_entries"
+            "quality_reports", "quality_findings", "image_import_sessions", "image_import_entries",
+            "file_object_roles", "image_inspection_runs", "image_frame_lineage"
         };
         foreach (var table in requiredTables)
         {
@@ -122,9 +123,13 @@ public sealed class BusinessDatabaseTests
             6,
             "0006_never_reached.sql",
             "CREATE TABLE still_never_reached(id INTEGER PRIMARY KEY);");
+        var seventhMigration = BusinessMigration.Create(
+            7,
+            "0007_never_reached.sql",
+            "CREATE TABLE latest_never_reached(id INTEGER PRIMARY KEY);");
         var database = new BusinessDatabase(
             scope.DatabasePath,
-            [baselineMigration, secondMigration, brokenMigration, fourthMigration, fifthMigration, sixthMigration]);
+            [baselineMigration, secondMigration, brokenMigration, fourthMigration, fifthMigration, sixthMigration, seventhMigration]);
 
         var exception = Assert.Throws<BusinessDatabaseException>(database.Initialize);
 
@@ -195,6 +200,10 @@ public sealed class BusinessDatabaseTests
         AssertSqlRejected(connection, "UPDATE projects SET lifecycle_state='invalid' WHERE project_id='project-1';");
         AssertSqlRejected(connection, "UPDATE dataset_versions SET quality_gate_state='passed' WHERE dataset_version_id='dataset-version-1';");
         AssertSqlRejected(connection, "DELETE FROM images WHERE image_id='image-1';");
+        AssertSqlRejected(connection, "UPDATE image_frames SET width=3999 WHERE image_frame_id='frame-1';");
+        AssertSqlRejected(connection, "DELETE FROM image_frame_lineage WHERE image_frame_lineage_id='lineage-1';");
+        AssertSqlRejected(connection, "DELETE FROM file_object_roles WHERE file_object_id='source-file' AND object_role='source_image';");
+        AssertSqlRejected(connection, "UPDATE image_inspection_runs SET status='blocked' WHERE inspection_run_id='inspection-1';");
         AssertSqlRejected(connection,
             $"INSERT INTO images(image_id,dataset_version_id,source_file_object_id,import_source_key,sort_index,content_container,image_state,metadata_state,created_at_utc) VALUES('image-2','dataset-version-1','source-file','late',2,'jpeg','imported','parsed','t');");
         AssertSqlRejected(connection, "UPDATE results SET bounds_json='{}' WHERE result_id='result-1';");
@@ -316,10 +325,76 @@ public sealed class BusinessDatabaseTests
         VALUES('position-file','positioning_aux','sha256','dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',80,'text/plain','sha256/dd/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd','available','2026-08-21T00:00:00Z','2026-08-21T00:00:00Z');
         INSERT INTO dataset_versions(dataset_version_id,dataset_id,version_number,lifecycle_state,source_eligibility_state,quality_gate_state,created_at_utc)
         VALUES('dataset-version-1','dataset-1',1,'draft','dji_supported','passed','2026-08-21T00:00:00Z');
-        INSERT INTO images(image_id,dataset_version_id,source_file_object_id,import_source_key,sort_index,content_container,primary_frame_index,width,height,manufacturer,camera_model,image_state,metadata_state,created_at_utc)
-        VALUES('image-1','dataset-version-1','source-file','DJI_0001.JPG',1,'jpeg',0,4000,3000,'DJI','FC-test','processing_input','parsed','2026-08-21T00:00:00Z');
-        INSERT INTO image_frames(image_frame_id,image_id,frame_index,frame_role,width,height,decode_state)
-        VALUES('frame-1','image-1',0,'primary_photogrammetry',4000,3000,'decoded');
+        INSERT INTO file_object_roles(file_object_id,object_role,created_at_utc)
+        VALUES('source-file','source_image','2026-08-21T00:00:00Z');
+        INSERT INTO file_object_roles(file_object_id,object_role,created_at_utc)
+        VALUES('source-file','normalized_image_frame','2026-08-21T00:00:00Z');
+        INSERT INTO image_import_sessions(
+            import_session_id,dataset_version_id,source_root_key,source_locator_manifest_id,status,
+            total_entry_count,available_entry_count,created_at_utc,updated_at_utc,completed_at_utc)
+        VALUES(
+            'import-session-1','dataset-version-1','eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+            'manifest-1','completed',1,1,'2026-08-21T00:00:00Z','2026-08-21T00:00:00Z','2026-08-21T00:00:00Z');
+        INSERT INTO image_import_entries(
+            import_entry_id,import_session_id,dataset_version_id,source_entry_key,display_name,sort_index,
+            byte_length_snapshot,status,stage_receipt_id,stage_receipt_sha256,stage_receipt_byte_length,
+            stage_receipt_created_at_utc,expected_content_hash,expected_byte_length,expected_object_key,
+            file_object_id,created_at_utc,updated_at_utc,terminal_at_utc)
+        VALUES(
+            'import-entry-1','import-session-1','dataset-version-1',
+            'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff','DJI_0001.JPG',1,
+            100,'available','stage-1','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',100,
+            '2026-08-21T00:00:00Z','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',100,
+            'sha256/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','source-file',
+            '2026-08-21T00:00:00Z','2026-08-21T00:00:00Z','2026-08-21T00:00:00Z');
+        INSERT INTO image_inspection_runs(
+            inspection_run_id,import_entry_id,dataset_version_id,source_file_object_id,status,
+            parser_schema,parser_profile,product_parser,product_parser_version,native_decoder,native_decoder_version,
+            main_frame_policy_version,content_container,primary_frame_index,frame_count,
+            frame_inventory_json,frame_inventory_sha256,normalization_action,
+            normalized_content_sha256,normalized_content_byte_length,normalized_object_key,
+            created_at_utc,updated_at_utc)
+        VALUES(
+            'inspection-1','import-entry-1','dataset-version-1','source-file','recording',
+            'qiongtu.image-probe.cas-image.v1','cas-image.v1','qiongtu.cas-image','1.0.0',
+            'magick.net-q16-x64','14.16.0','photogrammetry-main-frame.v1','jpeg',0,1,
+            '{}','1111111111111111111111111111111111111111111111111111111111111111','reuse_source_object',
+            'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',100,
+            'sha256/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            '2026-08-21T00:00:00Z','2026-08-21T00:00:00Z');
+        INSERT INTO images(
+            image_id,dataset_version_id,source_file_object_id,normalized_file_object_id,import_source_key,sort_index,
+            content_container,primary_frame_index,width,height,manufacturer,camera_model,image_state,metadata_state,created_at_utc,
+            import_entry_id,inspection_run_id,parser_schema,parser_profile,product_parser,product_parser_version,
+            native_decoder,native_decoder_version,main_frame_policy_version,frame_inventory_sha256)
+        VALUES(
+            'image-1','dataset-version-1','source-file','source-file',
+            'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',1,'jpeg',0,4000,3000,
+            'DJI','FC-test','processing_input','parsed','2026-08-21T00:00:00Z','import-entry-1','inspection-1',
+            'qiongtu.image-probe.cas-image.v1','cas-image.v1','qiongtu.cas-image','1.0.0',
+            'magick.net-q16-x64','14.16.0','photogrammetry-main-frame.v1',
+            '1111111111111111111111111111111111111111111111111111111111111111');
+        INSERT INTO image_frames(
+            image_frame_id,image_id,frame_index,frame_role,width,height,decode_state,normalized_file_object_id,
+            frame_kind,byte_offset,byte_length,bits_per_channel,orientation,effective_width,effective_height,normalization_action)
+        VALUES(
+            'frame-1','image-1',0,'primary_photogrammetry',4000,3000,'decoded','source-file',
+            'jpeg',0,100,8,1,4000,3000,'reuse_source_object');
+        INSERT INTO image_frame_lineage(
+            image_frame_lineage_id,image_frame_id,source_file_object_id,normalized_file_object_id,source_frame_index,
+            normalization_action,parser_schema,parser_profile,product_parser,product_parser_version,native_decoder,native_decoder_version,
+            main_frame_policy_version,byte_offset,byte_length,source_content_hash_snapshot,source_byte_length_snapshot,
+            normalized_content_hash_snapshot,normalized_byte_length_snapshot,lineage_sha256,created_at_utc)
+        VALUES(
+            'lineage-1','frame-1','source-file','source-file',0,'reuse_source_object',
+            'qiongtu.image-probe.cas-image.v1','cas-image.v1','qiongtu.cas-image','1.0.0','magick.net-q16-x64','14.16.0',
+            'photogrammetry-main-frame.v1',0,100,
+            'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',100,
+            'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',100,
+            '2222222222222222222222222222222222222222222222222222222222222222','2026-08-21T00:00:00Z');
+        UPDATE image_inspection_runs
+        SET status='completed',image_id='image-1',updated_at_utc='2026-08-21T00:00:01Z',completed_at_utc='2026-08-21T00:00:01Z'
+        WHERE inspection_run_id='inspection-1';
         INSERT INTO image_metadata_fields(image_metadata_field_id,image_id,field_name,field_value_json,source_kind,field_state)
         VALUES('metadata-1','image-1','gps.latitude','29.0','gps_exif','present');
         INSERT INTO positioning_aux_files(positioning_aux_file_id,dataset_version_id,file_object_id,auxiliary_type,retention_state,parse_state,quality_state,parser_name,parser_version,created_at_utc)

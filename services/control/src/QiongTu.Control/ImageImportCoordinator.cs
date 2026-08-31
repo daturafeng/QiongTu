@@ -24,6 +24,7 @@ public sealed class ImageImportCoordinator : IAsyncDisposable
     private readonly ImageImportSourceSecurity _sourceSecurity;
     private readonly ImageImportSourceDiscovery _sourceDiscovery;
     private readonly ContentAddressedObjectStore _objectStore;
+    private readonly Func<string, CancellationToken, Task>? _onCanonicalAvailable;
     private readonly Func<Stream, CancellationToken, Task<ObjectStageReceipt>> _stageSourceAsync;
     private readonly ImageImportCoordinatorOptions _options;
     private readonly Channel<string> _queue;
@@ -50,12 +51,14 @@ public sealed class ImageImportCoordinator : IAsyncDisposable
         ImageImportSourceDiscovery sourceDiscovery,
         ContentAddressedObjectStore objectStore,
         Func<Stream, CancellationToken, Task<ObjectStageReceipt>>? stageSourceAsync,
-        ImageImportCoordinatorOptions? options = null)
+        ImageImportCoordinatorOptions? options = null,
+        Func<string, CancellationToken, Task>? onCanonicalAvailable = null)
     {
         _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
         _sourceSecurity = sourceSecurity ?? throw new ArgumentNullException(nameof(sourceSecurity));
         _sourceDiscovery = sourceDiscovery ?? throw new ArgumentNullException(nameof(sourceDiscovery));
         _objectStore = objectStore ?? throw new ArgumentNullException(nameof(objectStore));
+        _onCanonicalAvailable = onCanonicalAvailable;
         _stageSourceAsync = stageSourceAsync ?? ((stream, token) => _objectStore.StageAsync(stream, cancellationToken: token));
         _options = options ?? new ImageImportCoordinatorOptions();
         if (_options.QueueCapacity <= 0)
@@ -579,7 +582,8 @@ public sealed class ImageImportCoordinator : IAsyncDisposable
         _catalog.MarkPublishing(item.ImportEntryId, stage.Sha256, stage.ByteLength);
         cancellationToken.ThrowIfCancellationRequested();
         var published = await _objectStore.PublishAsync(stage, cancellationToken);
-        _catalog.CompletePublishedEntry(item.ImportEntryId, published.Sha256, published.ByteLength);
+        var completed = _catalog.CompletePublishedEntry(item.ImportEntryId, published.Sha256, published.ByteLength);
+        await NotifyCanonicalAvailableAsync(completed, cancellationToken);
     }
 
     private async Task CompletePublishingWorkItemAsync(
@@ -595,7 +599,8 @@ public sealed class ImageImportCoordinator : IAsyncDisposable
                 cancellationToken);
             if (published is not null)
             {
-                _catalog.CompletePublishedEntry(item.ImportEntryId, published.Sha256, published.ByteLength);
+                var completed = _catalog.CompletePublishedEntry(item.ImportEntryId, published.Sha256, published.ByteLength);
+                await NotifyCanonicalAvailableAsync(completed, cancellationToken);
                 return;
             }
         }
@@ -605,11 +610,24 @@ public sealed class ImageImportCoordinator : IAsyncDisposable
         {
             var stage = recoveredStages is null ? item.StageReceipt : recoveredStages[item.StageReceipt.StageId];
             var published = await _objectStore.PublishAsync(stage, cancellationToken);
-            _catalog.CompletePublishedEntry(item.ImportEntryId, published.Sha256, published.ByteLength);
+            var completed = _catalog.CompletePublishedEntry(item.ImportEntryId, published.Sha256, published.ByteLength);
+            await NotifyCanonicalAvailableAsync(completed, cancellationToken);
             return;
         }
 
         _catalog.ResetEntryForSourceRetry(item.ImportEntryId, "object_stage_missing");
+    }
+
+    private async Task NotifyCanonicalAvailableAsync(
+        ImageImportEntry completed,
+        CancellationToken cancellationToken)
+    {
+        if (_onCanonicalAvailable is null || !string.Equals(completed.Status, "available", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        await _onCanonicalAvailable(completed.ImportEntryId, cancellationToken);
     }
 
     private ImageImportSourceSnapshot SnapshotFor(

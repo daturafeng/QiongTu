@@ -83,6 +83,44 @@ public sealed class ImageImportCatalogTests
     }
 
     [TestMethod]
+    public void ExistingNormalizedContentCanLaterGainSourceImageRoleWithoutDuplication()
+    {
+        using var scope = new CatalogScope();
+        scope.SeedProjectDatasetVersion("dataset-version-role", "dji_supported");
+        var session = scope.StartPrepared("request-role", "session-role", "dataset-version-role", Sha('a'), "manifest-role");
+        var entry = scope.Catalog.RegisterDiscoveredEntry(new ImageImportDiscoveredEntry(
+            session.ImportSessionId,
+            Sha('1'),
+            "DJI_ROLE.JPG",
+            0,
+            12,
+            null,
+            null));
+        scope.Catalog.RecordStageReceipt(new ImageImportStageReceipt(entry.ImportEntryId, "stage-role", Sha('e'), 12));
+        scope.Catalog.MarkPublishing(entry.ImportEntryId, Sha('e'), 12);
+        scope.Execute(
+            """
+            INSERT INTO file_objects(
+                file_object_id,object_kind,hash_algorithm,content_hash,byte_length,media_type,
+                object_key,storage_state,created_at_utc,available_at_utc)
+            VALUES(
+                'normalized-first','normalized_image_frame','sha256',$hash,12,'image/jpeg',
+                $object_key,'available','2026-08-31T00:00:00Z','2026-08-31T00:00:00Z');
+            INSERT INTO file_object_roles(file_object_id,object_role,created_at_utc)
+            VALUES('normalized-first','normalized_image_frame','2026-08-31T00:00:00Z');
+            """,
+            ("$hash", Sha('e')),
+            ("$object_key", $"sha256/ee/{Sha('e')}"));
+
+        var completed = scope.Catalog.CompletePublishedEntry(entry.ImportEntryId, Sha('e'), 12, "image/jpeg");
+
+        Assert.AreEqual("available", completed.Status);
+        Assert.AreEqual(1L, scope.Scalar<long>("SELECT count(*) FROM file_objects WHERE content_hash='eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';"));
+        Assert.AreEqual(2L, scope.Scalar<long>("SELECT count(*) FROM file_object_roles WHERE file_object_id='normalized-first';"));
+        Assert.AreEqual(1L, scope.Scalar<long>("SELECT count(*) FROM file_object_roles WHERE file_object_id='normalized-first' AND object_role='source_image';"));
+    }
+
+    [TestMethod]
     public void KeysetCursorsAreBoundToScopeAndPageSize()
     {
         using var scope = new CatalogScope();
@@ -192,6 +230,40 @@ public sealed class ImageImportCatalogTests
         Assert.AreEqual((long)BusinessDatabase.CurrentSchemaVersion, Scalar<long>(connection, "PRAGMA user_version;"));
         Assert.AreEqual(1L, Scalar<long>(connection, "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='image_import_sessions';"));
         Assert.AreEqual(1L, Scalar<long>(connection, "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='image_import_entries';"));
+    }
+
+    [TestMethod]
+    public void VersionSixDatabaseWithUnprovenImagesIsPreservedAndUpgradeIsRejected()
+    {
+        using var scope = new DatabaseOnlyScope();
+        CreateDatabaseAtVersion(scope.DatabasePath, 6);
+        using (var legacy = OpenRaw(scope.DatabasePath))
+        {
+            Execute(
+                legacy,
+                """
+                INSERT INTO projects(project_id,name,spatial_configuration_state,lifecycle_state,created_at_utc,updated_at_utc)
+                VALUES('legacy-project','Legacy','pending','active','t','t');
+                INSERT INTO datasets(dataset_id,project_id,name,lifecycle_state,created_at_utc,updated_at_utc)
+                VALUES('legacy-dataset','legacy-project','Legacy','active','t','t');
+                INSERT INTO dataset_versions(dataset_version_id,dataset_id,version_number,lifecycle_state,source_eligibility_state,quality_gate_state,created_at_utc)
+                VALUES('legacy-version','legacy-dataset',1,'draft','dji_supported','not_run','t');
+                INSERT INTO file_objects(file_object_id,object_kind,hash_algorithm,content_hash,byte_length,object_key,storage_state,created_at_utc,available_at_utc)
+                VALUES('legacy-source','source_image','sha256','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',1,
+                    'sha256/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','available','t','t');
+                INSERT INTO images(image_id,dataset_version_id,source_file_object_id,import_source_key,sort_index,content_container,image_state,metadata_state,created_at_utc)
+                VALUES('legacy-image','legacy-version','legacy-source','legacy',0,'jpeg','imported','not_parsed','t');
+                """);
+        }
+
+        var exception = Assert.Throws<BusinessDatabaseException>(() =>
+            new BusinessDatabase(scope.DatabasePath).Initialize());
+
+        Assert.AreEqual("business_database_migration_failed", exception.Code);
+        using var preserved = OpenRaw(scope.DatabasePath);
+        Assert.AreEqual(6L, Scalar<long>(preserved, "PRAGMA user_version;"));
+        Assert.AreEqual(1L, Scalar<long>(preserved, "SELECT count(*) FROM images WHERE image_id='legacy-image';"));
+        Assert.AreEqual(0L, Scalar<long>(preserved, "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='file_object_roles';"));
     }
 
     private static void AssertSanitized(ImageImportSession session)

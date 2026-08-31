@@ -83,7 +83,7 @@ internal static class CasImageStructureParser
 
             return new CasImageStructure(
                 "jpeg",
-                [new CasImageFrameStructure(0, "jpeg", 0, first.EndOffset, first.Width, first.Height, first.BitsPerChannel, null)]);
+                [new CasImageFrameStructure(0, "jpeg", 0, first.EndOffset, first.Width, first.Height, first.BitsPerChannel, first.Orientation)]);
         }
 
         var entries = ParseMpfEntries(stream, first.Mpf, stream.Length);
@@ -107,7 +107,7 @@ internal static class CasImageStructureParser
                 parsed.Width,
                 parsed.Height,
                 parsed.BitsPerChannel,
-                null));
+                parsed.Orientation));
             totalPixels = checked(totalPixels + ((long)parsed.Width * parsed.Height));
             if (totalPixels > QiongTu.Contracts.ImageProbeProtocol.MaximumCasTotalPixels)
             {
@@ -152,9 +152,11 @@ internal static class CasImageStructureParser
         int bitsPerChannel = 0;
         long metadataBytes = 0;
         MpfSegment? mpf = null;
+        int? orientation = null;
         byte? pendingMarker = null;
         Span<byte> sof = stackalloc byte[5];
         Span<byte> identifier = stackalloc byte[4];
+        Span<byte> exifIdentifier = stackalloc byte[6];
 
         while (pendingMarker is not null || cursor.Position < exclusiveEnd)
         {
@@ -187,7 +189,14 @@ internal static class CasImageStructureParser
                     throw new CasImageStructureException("jpeg_range_length_mismatch");
                 }
 
-                return new ParsedJpegFrame(cursor.Position, width, height, bitsPerChannel, metadataBytes, mpf);
+                return new ParsedJpegFrame(
+                    cursor.Position,
+                    width,
+                    height,
+                    bitsPerChannel,
+                    metadataBytes,
+                    mpf,
+                    orientation ?? 1);
             }
 
             if (marker == 0xdc)
@@ -269,6 +278,25 @@ internal static class CasImageStructureParser
                     mpf = new MpfSegment(dataOffset + 4, dataLength - 4);
                 }
             }
+            else if (marker == 0xe1 && dataLength >= 6)
+            {
+                ReadExactlyAt(stream, dataOffset, exifIdentifier, "jpeg_app1_truncated");
+                if (exifIdentifier.SequenceEqual("Exif\0\0"u8))
+                {
+                    var candidateOrientation = ParseJpegExifOrientation(
+                        stream,
+                        checked(dataOffset + 6),
+                        dataLength - 6);
+                    if (orientation is not null &&
+                        candidateOrientation is not null &&
+                        orientation != candidateOrientation)
+                    {
+                        throw new CasImageStructureException("jpeg_orientation_conflict");
+                    }
+
+                    orientation ??= candidateOrientation;
+                }
+            }
 
             cursor.Position = segmentEnd;
             if (marker != 0xda)
@@ -286,6 +314,71 @@ internal static class CasImageStructureParser
         }
 
         throw new CasImageStructureException("jpeg_eoi_missing");
+    }
+
+    private static int? ParseJpegExifOrientation(Stream stream, long tiffOffset, long tiffLength)
+    {
+        const string invalidCode = "jpeg_exif_orientation_invalid";
+        if (tiffLength < 8)
+        {
+            throw new CasImageStructureException(invalidCode);
+        }
+
+        Span<byte> byteOrder = stackalloc byte[2];
+        ReadExactlyAt(stream, tiffOffset, byteOrder, invalidCode);
+        var littleEndian = byteOrder.SequenceEqual("II"u8)
+            ? true
+            : byteOrder.SequenceEqual("MM"u8)
+                ? false
+                : throw new CasImageStructureException(invalidCode);
+        var reader = new TiffReader(stream, tiffOffset, tiffLength, littleEndian);
+        if (reader.ReadUInt16(2, invalidCode) != 42)
+        {
+            throw new CasImageStructureException(invalidCode);
+        }
+
+        var ifdOffset = reader.ReadUInt32(4, invalidCode);
+        var entryCount = reader.ReadUInt16(ifdOffset, invalidCode);
+        if (entryCount > QiongTu.Contracts.ImageProbeProtocol.MaximumCasIfdEntryCount)
+        {
+            throw new CasImageStructureException(invalidCode);
+        }
+
+        reader.RequireRange(
+            ifdOffset,
+            checked(2L + (entryCount * 12L) + 4L),
+            invalidCode);
+        int? orientation = null;
+        for (var index = 0; index < entryCount; index++)
+        {
+            var entryOffset = checked((long)ifdOffset + 2L + (index * 12L));
+            if (reader.ReadUInt16(entryOffset, invalidCode) != TiffTagOrientation)
+            {
+                continue;
+            }
+
+            var type = reader.ReadUInt16(entryOffset + 2, invalidCode);
+            var count = reader.ReadUInt32(entryOffset + 4, invalidCode);
+            if (type != 3 || count != 1)
+            {
+                throw new CasImageStructureException(invalidCode);
+            }
+
+            var candidate = checked((int)reader.ReadUInt16(entryOffset + 8, invalidCode));
+            if (candidate is < 1 or > 8)
+            {
+                throw new CasImageStructureException(invalidCode);
+            }
+
+            if (orientation is not null && orientation != candidate)
+            {
+                throw new CasImageStructureException("jpeg_orientation_conflict");
+            }
+
+            orientation = candidate;
+        }
+
+        return orientation;
     }
 
     private static byte ReadMarker(BoundedStreamCursor cursor)
@@ -784,7 +877,8 @@ internal static class CasImageStructureParser
         int Height,
         int BitsPerChannel,
         long MetadataBytes,
-        MpfSegment? Mpf);
+        MpfSegment? Mpf,
+        int Orientation);
 
     private sealed record MpfSegment(long Offset, long Length);
 

@@ -1180,20 +1180,23 @@ public sealed class ImageImportCatalog
 
     private static string InsertOrReuseSourceImageObject(SqliteConnection connection, SqliteTransaction transaction, string sha256, long byteLength, string? mediaType)
     {
-        using (var select = Command(connection, transaction, "SELECT file_object_id, object_kind, storage_state FROM file_objects WHERE hash_algorithm = 'sha256' AND content_hash = $content_hash AND byte_length = $byte_length;"))
+        using (var select = Command(connection, transaction, "SELECT file_object_id, storage_state, object_key FROM file_objects WHERE hash_algorithm = 'sha256' AND content_hash = $content_hash AND byte_length = $byte_length;"))
         {
             Add(select, "$content_hash", sha256);
             Add(select, "$byte_length", byteLength);
             using var reader = select.ExecuteReader();
             if (reader.Read())
             {
-                if (!string.Equals(reader.GetString(1), "source_image", StringComparison.Ordinal) ||
-                    !string.Equals(reader.GetString(2), "available", StringComparison.Ordinal))
+                if (!string.Equals(reader.GetString(1), "available", StringComparison.Ordinal) ||
+                    !string.Equals(reader.GetString(2), ObjectKey(sha256), StringComparison.Ordinal))
                 {
-                    throw new BusinessCatalogException("file_object_identity_conflict", "An existing content object with the same hash and length is not an available source image.");
+                    throw new BusinessCatalogException("file_object_identity_conflict", "An existing content object with the same hash and length is not available at the expected content key.");
                 }
 
-                return reader.GetString(0);
+                var existingId = reader.GetString(0);
+                reader.Close();
+                InsertFileObjectRole(connection, transaction, existingId, "source_image");
+                return existingId;
             }
         }
 
@@ -1218,7 +1221,28 @@ public sealed class ImageImportCatalog
         Add(insert, "$created_at_utc", now);
         Add(insert, "$available_at_utc", now);
         insert.ExecuteNonQuery();
+        InsertFileObjectRole(connection, transaction, fileObjectId, "source_image");
         return fileObjectId;
+    }
+
+    private static void InsertFileObjectRole(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string fileObjectId,
+        string objectRole)
+    {
+        using var insert = Command(
+            connection,
+            transaction,
+            """
+            INSERT INTO file_object_roles(file_object_id, object_role, created_at_utc)
+            VALUES($file_object_id, $object_role, $created_at_utc)
+            ON CONFLICT(file_object_id, object_role) DO NOTHING;
+            """);
+        Add(insert, "$file_object_id", fileObjectId);
+        Add(insert, "$object_role", objectRole);
+        Add(insert, "$created_at_utc", UtcNowText());
+        insert.ExecuteNonQuery();
     }
 
     private static string? FindCanonicalEntry(SqliteConnection connection, SqliteTransaction transaction, string importSessionId, string fileObjectId)

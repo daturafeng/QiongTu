@@ -38,6 +38,11 @@ public sealed class ControlApplication
 
         var objectStore = new ContentAddressedObjectStore(_paths.ObjectDirectory);
         var imageImportCatalog = new ImageImportCatalog(businessDatabase);
+        var imageFrameCatalog = new ImageFrameCatalog(businessDatabase);
+        await using var imageInspectionCoordinator = new ImageInspectionCoordinator(
+            imageFrameCatalog,
+            objectStore,
+            new IsolatedImageCasProbeClient());
         var imageImportSourceSecurity = new ImageImportSourceSecurity(
             Path.Combine(_paths.StateDirectory, "image-import-locators"));
         var imageImportSourceDiscovery = new ImageImportSourceDiscovery(imageImportSourceSecurity);
@@ -45,7 +50,10 @@ public sealed class ControlApplication
             imageImportCatalog,
             imageImportSourceSecurity,
             imageImportSourceDiscovery,
-            objectStore);
+            objectStore,
+            stageSourceAsync: null,
+            options: null,
+            onCanonicalAvailable: imageInspectionCoordinator.EnqueueImportEntryAsync);
         var imageImportPreflightCatalog = new ImageImportPreflightCatalog(businessDatabase);
         var imageSourcePreflightProbe = new ImageSourcePreflightProbe(imageImportSourceDiscovery);
         await using var imageImportPreflightCoordinator = new ImageImportPreflightCoordinator(
@@ -57,6 +65,7 @@ public sealed class ControlApplication
             _paths);
         await imageImportPreflightCoordinator.RecoverAsync(cancellationToken);
         await imageImportCoordinator.RecoverAsync(cancellationToken);
+        await imageInspectionCoordinator.RecoverAsync(cancellationToken);
 
         var roots = new ArtifactRootRegistry();
         roots.RegisterTrustedRoot("objects", objectStore.PublishedDirectory);
@@ -79,7 +88,8 @@ public sealed class ControlApplication
             imageImportCatalog,
             _paths,
             imageImportPreflightCoordinator,
-            imageImportPreflightCatalog);
+            imageImportPreflightCatalog,
+            imageInspectionCoordinator);
         await using var pipeServer = new NamedPipeControlServer(pipeName, dispatcher);
         pipeServer.Start();
 

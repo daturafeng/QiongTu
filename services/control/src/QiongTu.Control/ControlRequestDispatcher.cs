@@ -25,6 +25,7 @@ public sealed class ControlRequestDispatcher
     private readonly ControlDataPaths? _controlDataPaths;
     private readonly ImageImportPreflightCoordinator? _imageImportPreflights;
     private readonly ImageImportPreflightCatalog? _imageImportPreflightCatalog;
+    private readonly ImageInspectionCoordinator? _imageInspections;
 
     internal ControlRequestDispatcher(
         string pipeName,
@@ -38,7 +39,8 @@ public sealed class ControlRequestDispatcher
         ImageImportCatalog? imageImportCatalog = null,
         ControlDataPaths? controlDataPaths = null,
         ImageImportPreflightCoordinator? imageImportPreflights = null,
-        ImageImportPreflightCatalog? imageImportPreflightCatalog = null)
+        ImageImportPreflightCatalog? imageImportPreflightCatalog = null,
+        ImageInspectionCoordinator? imageInspections = null)
     {
         _pipeName = pipeName;
         _startedAtUtc = startedAtUtc;
@@ -52,6 +54,7 @@ public sealed class ControlRequestDispatcher
         _controlDataPaths = controlDataPaths;
         _imageImportPreflights = imageImportPreflights;
         _imageImportPreflightCatalog = imageImportPreflightCatalog;
+        _imageInspections = imageInspections;
     }
 
     public async Task<ControlResponse> DispatchAsync(ControlRequest request, CancellationToken cancellationToken)
@@ -295,7 +298,8 @@ public sealed class ControlRequestDispatcher
     {
         if (_workers.ActiveCount != 0 ||
             (_imageImports is not null && !_imageImports.IsIdle) ||
-            (_imageImportPreflights is not null && !_imageImportPreflights.IsIdle))
+            (_imageImportPreflights is not null && !_imageImportPreflights.IsIdle) ||
+            (_imageInspections is not null && !_imageInspections.IsIdle))
         {
             throw new ControlProtocolException("control_busy", "The control process still owns active workers.");
         }

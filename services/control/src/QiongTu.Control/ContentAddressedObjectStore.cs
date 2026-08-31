@@ -345,6 +345,98 @@ public sealed class ContentAddressedObjectStore
         return new PublishedObject(normalizedSha256, byteLength, objectKey, Deduplicated: true);
     }
 
+    internal async Task<FileStream> OpenPublishedReadAsync(
+        PublishedObject published,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(published);
+        var normalizedSha256 = NormalizeSha256(published.Sha256);
+        if (published.ByteLength < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(published));
+        }
+
+        var expectedObjectKey = CreateObjectKey(normalizedSha256);
+        if (!string.Equals(published.ObjectKey, expectedObjectKey, StringComparison.Ordinal))
+        {
+            throw new ObjectStoreException(
+                "object_key_invalid",
+                "The published object key does not match its SHA-256 content address.");
+        }
+
+        var targetPath = ResolvePublishedPath(expectedObjectKey);
+        if (!File.Exists(targetPath))
+        {
+            throw new ObjectStoreException(
+                "object_formal_missing",
+                "The formal content object is missing.");
+        }
+
+        EnsurePathHasNoReparsePoint(PublishedDirectory, targetPath);
+        var stream = new FileStream(
+            targetPath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            BufferSize,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        try
+        {
+            var actual = await HashStreamAsync(stream, cancellationToken);
+            if (actual.ByteLength != published.ByteLength ||
+                !string.Equals(actual.Sha256, normalizedSha256, StringComparison.Ordinal))
+            {
+                throw new ObjectStoreException(
+                    "object_formal_integrity_failed",
+                    "The formal content object no longer matches its expected SHA-256 and byte length.");
+            }
+
+            stream.Position = 0;
+            return stream;
+        }
+        catch
+        {
+            await stream.DisposeAsync();
+            throw;
+        }
+    }
+
+    internal async Task<ObjectStageReceipt> StagePublishedRangeAsync(
+        PublishedObject published,
+        long byteOffset,
+        long byteLength,
+        CancellationToken cancellationToken = default)
+    {
+        if (byteOffset < 0 || byteLength <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(byteOffset));
+        }
+
+        long exclusiveEnd;
+        try
+        {
+            exclusiveEnd = checked(byteOffset + byteLength);
+        }
+        catch (OverflowException exception)
+        {
+            throw new ObjectStoreException(
+                "object_range_invalid",
+                "The published object range overflows its byte identity.",
+                innerException: exception);
+        }
+
+        if (exclusiveEnd > published.ByteLength)
+        {
+            throw new ObjectStoreException(
+                "object_range_invalid",
+                "The published object range is outside the formal content object.");
+        }
+
+        await using var source = await OpenPublishedReadAsync(published, cancellationToken);
+        await using var range = new BoundedReadOnlyStream(source, byteOffset, byteLength);
+        return await StageAsync(range, cancellationToken: cancellationToken);
+    }
+
     public async Task<QuarantinedObject> AbandonAsync(
         ObjectStageReceipt stage,
         CancellationToken cancellationToken = default)
@@ -525,6 +617,118 @@ public sealed class ContentAddressedObjectStore
         {
             ArrayPool<byte>.Shared.Return(buffer);
         }
+    }
+
+    private static async Task<FileIdentity> HashStreamAsync(Stream stream, CancellationToken cancellationToken)
+    {
+        var buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
+        try
+        {
+            using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            long byteLength = 0;
+            stream.Position = 0;
+            while (true)
+            {
+                var read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken);
+                if (read == 0)
+                {
+                    break;
+                }
+
+                hash.AppendData(buffer, 0, read);
+                byteLength = checked(byteLength + read);
+            }
+
+            return new FileIdentity(
+                Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant(),
+                byteLength);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    private sealed class BoundedReadOnlyStream : Stream
+    {
+        private readonly Stream _inner;
+        private readonly long _offset;
+        private readonly long _length;
+        private long _position;
+
+        public BoundedReadOnlyStream(Stream inner, long offset, long length)
+        {
+            _inner = inner;
+            _offset = offset;
+            _length = length;
+            _inner.Position = offset;
+        }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => true;
+        public override bool CanWrite => false;
+        public override long Length => _length;
+
+        public override long Position
+        {
+            get => _position;
+            set => Seek(value, SeekOrigin.Begin);
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (_position >= _length)
+            {
+                return 0;
+            }
+
+            var requested = checked((int)Math.Min(count, _length - _position));
+            _inner.Position = checked(_offset + _position);
+            var read = _inner.Read(buffer, offset, requested);
+            _position = checked(_position + read);
+            return read;
+        }
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            if (_position >= _length)
+            {
+                return 0;
+            }
+
+            var requested = checked((int)Math.Min(buffer.Length, _length - _position));
+            _inner.Position = checked(_offset + _position);
+            var read = await _inner.ReadAsync(buffer[..requested], cancellationToken);
+            _position = checked(_position + read);
+            return read;
+        }
+
+        public override long Seek(long offset, SeekOrigin origin)
+        {
+            var next = origin switch
+            {
+                SeekOrigin.Begin => offset,
+                SeekOrigin.Current => checked(_position + offset),
+                SeekOrigin.End => checked(_length + offset),
+                _ => throw new ArgumentOutOfRangeException(nameof(origin))
+            };
+            if (next < 0 || next > _length)
+            {
+                throw new ArgumentOutOfRangeException(nameof(offset));
+            }
+
+            _position = next;
+            return next;
+        }
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     private async Task<string> QuarantineStageDirectoryAsync(

@@ -54,9 +54,11 @@ internal sealed class IsolatedImageCasProbeClient : IImageCasProbeClient
         "invalid_invocation",
         "invalid_object_kind",
         "jpeg_app2_truncated",
+        "jpeg_app1_truncated",
         "jpeg_dimensions_invalid",
         "jpeg_dnl_not_supported",
         "jpeg_eoi_missing",
+        "jpeg_exif_orientation_invalid",
         "jpeg_marker_limit_exceeded",
         "jpeg_marker_order_invalid",
         "jpeg_marker_prefix_missing",
@@ -64,6 +66,7 @@ internal sealed class IsolatedImageCasProbeClient : IImageCasProbeClient
         "jpeg_metadata_limit_exceeded",
         "jpeg_range_length_mismatch",
         "jpeg_range_out_of_bounds",
+        "jpeg_orientation_conflict",
         "jpeg_required_marker_missing",
         "jpeg_scan_truncated",
         "jpeg_segment_length_invalid",
@@ -582,7 +585,7 @@ internal sealed class IsolatedImageCasProbeClient : IImageCasProbeClient
         frames[0].FrameKind == "jpeg" &&
         frames[0].ByteOffset == 0 &&
         frames[0].ByteLength == objectByteLength &&
-        frames[0].Orientation is null;
+        frames[0].Orientation is >= 1 and <= 8;
 
     private static bool ValidateMpoFrames(
         IReadOnlyList<ImageProbeCasImageFrame> frames,
@@ -591,7 +594,7 @@ internal sealed class IsolatedImageCasProbeClient : IImageCasProbeClient
         if (frames.Count < 2 ||
             frames[0].FrameKind != "mp_primary_image" ||
             frames[0].ByteOffset != 0 ||
-            frames.Any(frame => frame.ByteLength <= 0 || frame.Orientation is not null) ||
+            frames.Any(frame => frame.ByteLength <= 0 || frame.Orientation is not (>= 1 and <= 8)) ||
             frames.Skip(1).Any(frame => frame.FrameKind != "mp_auxiliary_image"))
         {
             return false;

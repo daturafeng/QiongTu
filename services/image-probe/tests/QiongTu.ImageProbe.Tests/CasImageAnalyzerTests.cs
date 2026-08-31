@@ -32,6 +32,31 @@ public sealed class CasImageAnalyzerTests
         Assert.AreEqual(4, result.Frames[0].Width);
         Assert.AreEqual(3, result.Frames[0].Height);
         Assert.AreEqual(8, result.Frames[0].BitsPerChannel);
+        Assert.AreEqual(1, result.Frames[0].Orientation);
+        AssertPrivacy(result);
+    }
+
+    [TestMethod]
+    public void Analyze_JpegExifOrientation_IsBoundedAndPreserved()
+    {
+        var result = AnalyzeFormalObject(AddJpegExifOrientation(ValidJpeg, 6));
+
+        Assert.AreEqual("completed", result.Status, string.Join(',', result.ReasonCodes));
+        Assert.AreEqual(6, result.Frames[0].Orientation);
+        Assert.AreEqual(4, result.Frames[0].Width);
+        Assert.AreEqual(3, result.Frames[0].Height);
+        AssertPrivacy(result);
+    }
+
+    [TestMethod]
+    public void Analyze_ConflictingJpegExifOrientation_IsBlocked()
+    {
+        var conflicting = AddJpegExifOrientation(AddJpegExifOrientation(ValidJpeg, 6), 3);
+
+        var result = AnalyzeFormalObject(conflicting);
+
+        Assert.AreEqual("blocked", result.Status);
+        CollectionAssert.Contains(result.ReasonCodes.ToArray(), "jpeg_orientation_conflict");
         AssertPrivacy(result);
     }
 
@@ -553,6 +578,35 @@ public sealed class CasImageAnalyzerTests
         }
 
         jpeg.AsSpan(2).CopyTo(result.AsSpan(writeOffset));
+        return result;
+    }
+
+    private static byte[] AddJpegExifOrientation(byte[] jpeg, ushort orientation)
+    {
+        const int tiffLength = 8 + 2 + 12 + 4;
+        var payload = new byte[6 + tiffLength];
+        "Exif\0\0"u8.CopyTo(payload);
+        var tiff = payload.AsSpan(6);
+        tiff[0] = (byte)'I';
+        tiff[1] = (byte)'I';
+        BinaryPrimitives.WriteUInt16LittleEndian(tiff[2..4], 42);
+        BinaryPrimitives.WriteUInt32LittleEndian(tiff[4..8], 8);
+        BinaryPrimitives.WriteUInt16LittleEndian(tiff[8..10], 1);
+        BinaryPrimitives.WriteUInt16LittleEndian(tiff[10..12], 274);
+        BinaryPrimitives.WriteUInt16LittleEndian(tiff[12..14], 3);
+        BinaryPrimitives.WriteUInt32LittleEndian(tiff[14..18], 1);
+        BinaryPrimitives.WriteUInt16LittleEndian(tiff[18..20], orientation);
+        BinaryPrimitives.WriteUInt32LittleEndian(tiff[22..26], 0);
+
+        var segment = new byte[4 + payload.Length];
+        segment[0] = 0xff;
+        segment[1] = 0xe1;
+        BinaryPrimitives.WriteUInt16BigEndian(segment.AsSpan(2, 2), checked((ushort)(payload.Length + 2)));
+        payload.CopyTo(segment, 4);
+        var result = new byte[jpeg.Length + segment.Length];
+        jpeg.AsSpan(0, 2).CopyTo(result);
+        segment.CopyTo(result, 2);
+        jpeg.AsSpan(2).CopyTo(result.AsSpan(2 + segment.Length));
         return result;
     }
 

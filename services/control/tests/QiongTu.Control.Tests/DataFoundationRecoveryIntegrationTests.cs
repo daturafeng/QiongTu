@@ -40,10 +40,10 @@ public sealed class DataFoundationRecoveryIntegrationTests
         AssertSqliteFailure("sealed dataset image manifest is immutable", () =>
             scope.Execute(
                 "UPDATE images SET camera_model = 'changed' WHERE image_id = 'image-v1';"));
-        AssertSqliteFailure("sealed dataset image frames are immutable", () =>
+        AssertSqliteFailure("authoritative image frames are immutable", () =>
             scope.Execute(
                 "DELETE FROM image_frames WHERE image_frame_id = 'frame-image-v1';"));
-        AssertSqliteFailure("sealed dataset image manifest is immutable", () =>
+        AssertSqliteFailure(null, () =>
             scope.InsertImageManifest(version1.DatasetVersionId, "image-v1-extra", "source-image-v1-extra"));
 
         var version2 = scope.Catalog.CreateDatasetVersion(
@@ -256,6 +256,8 @@ public sealed class DataFoundationRecoveryIntegrationTests
                 """
                 INSERT INTO file_objects(file_object_id, object_kind, hash_algorithm, content_hash, byte_length, media_type, object_key, storage_state, original_display_name, created_at_utc, available_at_utc)
                 VALUES($file_object_id, $object_kind, 'sha256', $content_hash, $byte_length, $media_type, NULL, 'registered', NULL, $created_at_utc, NULL);
+                INSERT INTO file_object_roles(file_object_id, object_role, created_at_utc)
+                VALUES($file_object_id, $object_kind, $created_at_utc);
                 """,
                 ("$file_object_id", fileObjectId),
                 ("$object_kind", objectKind),
@@ -277,6 +279,8 @@ public sealed class DataFoundationRecoveryIntegrationTests
                 """
                 INSERT INTO file_objects(file_object_id, object_kind, hash_algorithm, content_hash, byte_length, media_type, object_key, storage_state, original_display_name, created_at_utc, available_at_utc)
                 VALUES($file_object_id, $object_kind, 'sha256', $content_hash, $byte_length, $media_type, $object_key, 'available', NULL, $created_at_utc, $available_at_utc);
+                INSERT INTO file_object_roles(file_object_id, object_role, created_at_utc)
+                VALUES($file_object_id, $object_kind, $created_at_utc);
                 """,
                 ("$file_object_id", fileObjectId),
                 ("$object_kind", objectKind),
@@ -290,40 +294,115 @@ public sealed class DataFoundationRecoveryIntegrationTests
 
         public void InsertImageManifest(string datasetVersionId, string imageId, string sourceFileObjectId)
         {
+            var sourceEntryKey = Sha256Hex(Encoding.UTF8.GetBytes(imageId));
+            var inventoryHash = Sha256Hex(Encoding.UTF8.GetBytes($"inventory:{imageId}"));
+            var lineageHash = Sha256Hex(Encoding.UTF8.GetBytes($"lineage:{imageId}"));
             Execute(
                 """
+                UPDATE file_objects
+                SET object_key = 'sha256/' || substr(content_hash, 1, 2) || '/' || content_hash,
+                    storage_state = 'available', available_at_utc = $created_at_utc
+                WHERE file_object_id = $source_file_object_id;
+                INSERT INTO file_object_roles(file_object_id, object_role, created_at_utc)
+                VALUES($source_file_object_id, 'normalized_image_frame', $created_at_utc)
+                ON CONFLICT(file_object_id, object_role) DO NOTHING;
+                INSERT INTO image_import_sessions(
+                    import_session_id, dataset_version_id, source_root_key, source_locator_manifest_id,
+                    status, total_entry_count, available_entry_count, created_at_utc, updated_at_utc, completed_at_utc)
+                VALUES(
+                    $session_id, $dataset_version_id, $source_entry_key, $manifest_id,
+                    'completed', 1, 1, $created_at_utc, $created_at_utc, $created_at_utc);
+                INSERT INTO image_import_entries(
+                    import_entry_id, import_session_id, dataset_version_id, source_entry_key, display_name, sort_index,
+                    status, stage_receipt_id, stage_receipt_sha256, stage_receipt_byte_length, stage_receipt_created_at_utc,
+                    expected_content_hash, expected_byte_length, expected_object_key, file_object_id,
+                    created_at_utc, updated_at_utc, terminal_at_utc)
+                SELECT
+                    $entry_id, $session_id, $dataset_version_id, $source_entry_key, $display_name, $sort_index,
+                    'available', $stage_id, content_hash, byte_length, $created_at_utc,
+                    content_hash, byte_length, object_key, file_object_id,
+                    $created_at_utc, $created_at_utc, $created_at_utc
+                FROM file_objects WHERE file_object_id = $source_file_object_id;
+                INSERT INTO image_inspection_runs(
+                    inspection_run_id, import_entry_id, dataset_version_id, source_file_object_id, status,
+                    parser_schema, parser_profile, product_parser, product_parser_version,
+                    native_decoder, native_decoder_version, main_frame_policy_version,
+                    content_container, primary_frame_index, frame_count, frame_inventory_json, frame_inventory_sha256,
+                    normalization_action, normalized_content_sha256, normalized_content_byte_length, normalized_object_key,
+                    created_at_utc, updated_at_utc)
+                SELECT
+                    $inspection_id, $entry_id, $dataset_version_id, file_object_id, 'recording',
+                    'qiongtu.image-probe.cas-image.v1', 'cas-image.v1', 'qiongtu.cas-image', '1.0.0',
+                    'magick.net-q16-x64', '14.16.0', 'photogrammetry-main-frame.v1',
+                    'jpeg', 0, 1, '{}', $inventory_hash,
+                    'reuse_source_object', content_hash, byte_length, object_key,
+                    $created_at_utc, $created_at_utc
+                FROM file_objects WHERE file_object_id = $source_file_object_id;
                 INSERT INTO images(
                     image_id, dataset_version_id, source_file_object_id, normalized_file_object_id,
                     import_source_key, sort_index, content_container, primary_frame_index, width, height,
                     capture_time_utc, manufacturer, camera_model, lens_model, image_state, metadata_state,
-                    duplicate_of_image_id, raw_metadata_json, created_at_utc)
+                    duplicate_of_image_id, raw_metadata_json, created_at_utc,
+                    import_entry_id, inspection_run_id, parser_schema, parser_profile,
+                    product_parser, product_parser_version, native_decoder, native_decoder_version,
+                    main_frame_policy_version, frame_inventory_sha256)
                 VALUES(
-                    $image_id, $dataset_version_id, $source_file_object_id, NULL,
-                    $import_source_key, $sort_index, 'jpeg', 0, 4000, 3000,
+                    $image_id, $dataset_version_id, $source_file_object_id, $source_file_object_id,
+                    $source_entry_key, $sort_index, 'jpeg', 0, 4000, 3000,
                     $capture_time_utc, 'DJI', 'FC-test', NULL, 'processing_input', 'parsed',
-                    NULL, '{"manufacturer":"DJI"}', $created_at_utc);
-                """,
-                ("$image_id", imageId),
-                ("$dataset_version_id", datasetVersionId),
-                ("$source_file_object_id", sourceFileObjectId),
-                ("$import_source_key", $"{imageId}.JPG"),
-                ("$sort_index", imageId.EndsWith("extra", StringComparison.Ordinal) ? 1 : 0),
-                ("$capture_time_utc", Now("02")),
-                ("$created_at_utc", Now("02")));
-            Execute(
-                """
-                INSERT INTO image_frames(image_frame_id, image_id, frame_index, frame_role, width, height, decode_state, normalized_file_object_id, metadata_json)
-                VALUES($frame_id, $image_id, 0, 'primary_photogrammetry', 4000, 3000, 'decoded', NULL, '{"role":"primary"}');
-                """,
-                ("$frame_id", $"frame-{imageId}"),
-                ("$image_id", imageId));
-            Execute(
-                """
+                    NULL, NULL, $created_at_utc,
+                    $entry_id, $inspection_id, 'qiongtu.image-probe.cas-image.v1', 'cas-image.v1',
+                    'qiongtu.cas-image', '1.0.0', 'magick.net-q16-x64', '14.16.0',
+                    'photogrammetry-main-frame.v1', $inventory_hash);
+                INSERT INTO image_frames(
+                    image_frame_id, image_id, frame_index, frame_role, width, height, decode_state,
+                    normalized_file_object_id, metadata_json, frame_kind, byte_offset, byte_length,
+                    bits_per_channel, orientation, effective_width, effective_height, normalization_action)
+                SELECT
+                    $frame_id, $image_id, 0, 'primary_photogrammetry', 4000, 3000, 'decoded',
+                    $source_file_object_id, NULL, 'jpeg', 0, byte_length,
+                    8, 1, 4000, 3000, 'reuse_source_object'
+                FROM file_objects WHERE file_object_id = $source_file_object_id;
+                INSERT INTO image_frame_lineage(
+                    image_frame_lineage_id, image_frame_id, source_file_object_id, normalized_file_object_id,
+                    source_frame_index, normalization_action, parser_schema, parser_profile,
+                    product_parser, product_parser_version, native_decoder, native_decoder_version,
+                    main_frame_policy_version, byte_offset, byte_length,
+                    source_content_hash_snapshot, source_byte_length_snapshot,
+                    normalized_content_hash_snapshot, normalized_byte_length_snapshot,
+                    lineage_sha256, created_at_utc)
+                SELECT
+                    $lineage_id, $frame_id, file_object_id, file_object_id,
+                    0, 'reuse_source_object', 'qiongtu.image-probe.cas-image.v1', 'cas-image.v1',
+                    'qiongtu.cas-image', '1.0.0', 'magick.net-q16-x64', '14.16.0',
+                    'photogrammetry-main-frame.v1', 0, byte_length,
+                    content_hash, byte_length, content_hash, byte_length,
+                    $lineage_hash, $created_at_utc
+                FROM file_objects WHERE file_object_id = $source_file_object_id;
+                UPDATE image_inspection_runs
+                SET status='completed', image_id=$image_id, updated_at_utc=$created_at_utc, completed_at_utc=$created_at_utc
+                WHERE inspection_run_id=$inspection_id;
                 INSERT INTO image_metadata_fields(image_metadata_field_id, image_id, field_name, field_value_json, source_kind, field_state, source_detail)
                 VALUES($metadata_id, $image_id, 'manufacturer', '"DJI"', 'exif', 'present', 'EXIF Make');
                 """,
+                ("$session_id", $"session-{imageId}"),
+                ("$manifest_id", $"manifest-{imageId}"),
+                ("$entry_id", $"entry-{imageId}"),
+                ("$inspection_id", $"inspection-{imageId}"),
+                ("$stage_id", $"stage-{imageId}"),
+                ("$display_name", $"{imageId}.JPG"),
+                ("$source_entry_key", sourceEntryKey),
+                ("$inventory_hash", inventoryHash),
+                ("$lineage_hash", lineageHash),
+                ("$lineage_id", $"lineage-{imageId}"),
+                ("$frame_id", $"frame-{imageId}"),
                 ("$metadata_id", $"metadata-{imageId}"),
-                ("$image_id", imageId));
+                ("$image_id", imageId),
+                ("$dataset_version_id", datasetVersionId),
+                ("$source_file_object_id", sourceFileObjectId),
+                ("$sort_index", imageId.EndsWith("extra", StringComparison.Ordinal) ? 1 : 0),
+                ("$capture_time_utc", Now("02")),
+                ("$created_at_utc", Now("02")));
         }
 
         public void InsertProcessingJobWithExecution(string projectId, string datasetVersionId, string suffix)

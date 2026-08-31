@@ -212,6 +212,8 @@ public sealed class ImageImportDatabaseHardeningTests
                 VALUES(
                     $file_object_id, 'source_image', 'sha256', $hash, $byte_length,
                     'image/jpeg', $object_key, 'available', '2026-08-24T00:00:00Z', '2026-08-24T00:00:00Z');
+                INSERT INTO file_object_roles(file_object_id, object_role, created_at_utc)
+                VALUES($file_object_id, 'source_image', '2026-08-24T00:00:00Z');
                 """,
                 ("$file_object_id", fileObjectId),
                 ("$hash", hash),

@@ -32,13 +32,28 @@ internal sealed record ImageInspectionRunSnapshot(
     long? NormalizedContentByteLength,
     string? NormalizedObjectKey,
     string? ImageId,
-    string? FailureCode);
+    string? FailureCode,
+    string? SupportDisposition,
+    string? SupportPolicyVersion);
 
 internal sealed record ImageInspectionCompletion(
     string Status,
     string? ImageId,
     string? FailureCode,
-    bool ReusedExisting);
+    bool ReusedExisting,
+    string? SupportDisposition = null);
+
+internal static class ImageInspectionSupportPolicy
+{
+    internal const string Version = "vendor-payload-support.v1";
+    internal const string UnsupportedVendorPayload = "unsupported_vendor_payload";
+    internal const string ImageNotProcessable = "image_not_processable";
+
+    internal static string Classify(string failureCode) =>
+        string.Equals(failureCode, "mpf_unreferenced_trailing_data", StringComparison.Ordinal)
+            ? UnsupportedVendorPayload
+            : ImageNotProcessable;
+}
 
 internal sealed class ImageFrameCatalog
 {
@@ -430,8 +445,28 @@ internal sealed class ImageFrameCatalog
         var current = ReadRun(connection, transaction, inspectionRunId, byImportEntry: false);
         if (current.Status == "blocked")
         {
+            var expectedDisposition = ImageInspectionSupportPolicy.Classify(current.FailureCode!);
+            if (!string.Equals(current.SupportDisposition, expectedDisposition, StringComparison.Ordinal))
+            {
+                throw new BusinessCatalogException(
+                    "image_manifest_conflict",
+                    "The blocked image inspection support disposition is inconsistent.");
+            }
+
+            if (!string.Equals(current.SupportPolicyVersion, ImageInspectionSupportPolicy.Version, StringComparison.Ordinal))
+            {
+                throw new BusinessCatalogException(
+                    "image_manifest_conflict",
+                    "The blocked image inspection support policy identity is inconsistent.");
+            }
+
             transaction.Commit();
-            return new ImageInspectionCompletion("blocked", null, current.FailureCode, ReusedExisting: true);
+            return new ImageInspectionCompletion(
+                "blocked",
+                null,
+                current.FailureCode,
+                ReusedExisting: true,
+                current.SupportDisposition);
         }
 
         if (current.Status == "completed")
@@ -439,23 +474,33 @@ internal sealed class ImageFrameCatalog
             throw new BusinessCatalogException("image_manifest_conflict", "A completed image inspection cannot become blocked.");
         }
 
+        var supportDisposition = ImageInspectionSupportPolicy.Classify(failureCode);
         using var update = Command(
             connection,
             transaction,
             """
             UPDATE image_inspection_runs
             SET status = 'blocked', failure_code = $failure_code,
+                support_disposition = $support_disposition,
+                support_policy_version = $support_policy_version,
                 updated_at_utc = $updated_at_utc, completed_at_utc = $completed_at_utc
             WHERE inspection_run_id = $inspection_run_id;
             """);
         var now = UtcNowText();
         Add(update, "$failure_code", failureCode);
+        Add(update, "$support_disposition", supportDisposition);
+        Add(update, "$support_policy_version", ImageInspectionSupportPolicy.Version);
         Add(update, "$updated_at_utc", now);
         Add(update, "$completed_at_utc", now);
         Add(update, "$inspection_run_id", inspectionRunId);
         update.ExecuteNonQuery();
         transaction.Commit();
-        return new ImageInspectionCompletion("blocked", null, failureCode, ReusedExisting: false);
+        return new ImageInspectionCompletion(
+            "blocked",
+            null,
+            failureCode,
+            ReusedExisting: false,
+            supportDisposition);
     }
 
     public void MarkInterrupted(string inspectionRunId)
@@ -560,7 +605,7 @@ internal sealed class ImageFrameCatalog
                    r.normalized_stage_id, r.normalized_stage_sha256, r.normalized_stage_byte_length,
                    r.normalized_stage_created_at_utc, r.normalized_content_sha256,
                    r.normalized_content_byte_length, r.normalized_object_key,
-                   r.image_id, r.failure_code
+                   r.image_id, r.failure_code, r.support_disposition, r.support_policy_version
             FROM image_inspection_runs r
             JOIN image_import_entries e ON e.import_entry_id = r.import_entry_id
             JOIN file_objects f ON f.file_object_id = r.source_file_object_id
@@ -579,7 +624,8 @@ internal sealed class ImageFrameCatalog
             StringOrNull(reader, 10), IntOrNull(reader, 11), IntOrNull(reader, 12), StringOrNull(reader, 13),
             StringOrNull(reader, 14), StringOrNull(reader, 15), StringOrNull(reader, 16), StringOrNull(reader, 17),
             LongOrNull(reader, 18), DateTimeOffsetOrNull(reader, 19), StringOrNull(reader, 20), LongOrNull(reader, 21),
-            StringOrNull(reader, 22), StringOrNull(reader, 23), StringOrNull(reader, 24));
+            StringOrNull(reader, 22), StringOrNull(reader, 23), StringOrNull(reader, 24), StringOrNull(reader, 25),
+            StringOrNull(reader, 26));
     }
 
     private static void EnsureRunIdentity(ImageInspectionRunSnapshot run, SourceRow source)

@@ -131,9 +131,13 @@ public sealed class BusinessDatabaseTests
             8,
             "0008_never_reached.sql",
             "CREATE TABLE metadata_never_reached(id INTEGER PRIMARY KEY);");
+        var ninthMigration = BusinessMigration.Create(
+            9,
+            "0009_never_reached.sql",
+            "CREATE TABLE support_disposition_never_reached(id INTEGER PRIMARY KEY);");
         var database = new BusinessDatabase(
             scope.DatabasePath,
-            [baselineMigration, secondMigration, brokenMigration, fourthMigration, fifthMigration, sixthMigration, seventhMigration, eighthMigration]);
+            [baselineMigration, secondMigration, brokenMigration, fourthMigration, fifthMigration, sixthMigration, seventhMigration, eighthMigration, ninthMigration]);
 
         var exception = Assert.Throws<BusinessDatabaseException>(database.Initialize);
 
@@ -164,7 +168,7 @@ public sealed class BusinessDatabaseTests
     public void VersionSevenDatabaseWithUnprovenMetadataIsPreservedAndRejected()
     {
         using var scope = new DatabaseScope();
-        CreateVersionSevenDatabase(scope.DatabasePath);
+        CreateDatabaseAtVersion(scope.DatabasePath, 7);
         using (var connection = OpenRaw(scope.DatabasePath))
         {
             Execute(connection, "PRAGMA foreign_keys=OFF;");
@@ -182,6 +186,79 @@ public sealed class BusinessDatabaseTests
         Assert.AreEqual(1L, Scalar<long>(preserved, "SELECT count(*) FROM image_metadata_fields WHERE image_metadata_field_id='legacy-field';"));
         Assert.AreEqual(0L, Scalar<long>(preserved,
             "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='image_metadata_runs';"));
+    }
+
+    [TestMethod]
+    public void VersionEightBlockedVendorPayloadGetsDeterministicSupportDisposition()
+    {
+        using var scope = new DatabaseScope();
+        CreateDatabaseAtVersion(scope.DatabasePath, 8);
+        using (var connection = OpenRaw(scope.DatabasePath))
+        {
+            Execute(connection,
+                """
+                INSERT INTO projects(project_id,name,spatial_configuration_state,lifecycle_state,created_at_utc,updated_at_utc)
+                VALUES('upgrade-project','Upgrade','pending','active','t','t');
+                INSERT INTO datasets(dataset_id,project_id,name,lifecycle_state,created_at_utc,updated_at_utc)
+                VALUES('upgrade-dataset','upgrade-project','Upgrade','active','t','t');
+                INSERT INTO dataset_versions(dataset_version_id,dataset_id,version_number,lifecycle_state,source_eligibility_state,quality_gate_state,created_at_utc)
+                VALUES('upgrade-version','upgrade-dataset',1,'draft','dji_supported','not_run','t');
+                INSERT INTO file_objects(
+                    file_object_id,object_kind,hash_algorithm,content_hash,byte_length,object_key,
+                    storage_state,created_at_utc,available_at_utc)
+                VALUES(
+                    'upgrade-source','source_image','sha256','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',1,
+                    'sha256/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','available','t','t');
+                INSERT INTO file_object_roles(file_object_id,object_role,created_at_utc)
+                VALUES('upgrade-source','source_image','t');
+                INSERT INTO image_import_sessions(
+                    import_session_id,dataset_version_id,source_root_key,source_locator_manifest_id,status,
+                    total_entry_count,available_entry_count,created_at_utc,updated_at_utc,completed_at_utc)
+                VALUES(
+                    'upgrade-session','upgrade-version','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                    'upgrade-manifest','completed',1,1,'t','t','t');
+                INSERT INTO image_import_entries(
+                    import_entry_id,import_session_id,dataset_version_id,source_entry_key,display_name,sort_index,
+                    byte_length_snapshot,status,stage_receipt_id,stage_receipt_sha256,stage_receipt_byte_length,
+                    stage_receipt_created_at_utc,expected_content_hash,expected_byte_length,expected_object_key,
+                    file_object_id,created_at_utc,updated_at_utc,terminal_at_utc)
+                VALUES(
+                    'upgrade-entry','upgrade-session','upgrade-version',
+                    'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc','UPGRADE.JPG',0,1,
+                    'available','upgrade-stage','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',1,
+                    't','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',1,
+                    'sha256/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                    'upgrade-source','t','t','t');
+                INSERT INTO image_inspection_runs(
+                    inspection_run_id,import_entry_id,dataset_version_id,source_file_object_id,status,
+                    parser_schema,parser_profile,product_parser,product_parser_version,native_decoder,
+                    native_decoder_version,main_frame_policy_version,failure_code,
+                    created_at_utc,updated_at_utc,completed_at_utc)
+                VALUES(
+                    'upgrade-inspection','upgrade-entry','upgrade-version','upgrade-source','blocked',
+                    'qiongtu.image-probe.cas-image.v1','cas-image.v1','qiongtu.cas-image','1.0.0',
+                    'magick.net-q16-x64','14.16.0','photogrammetry-main-frame.v1',
+                    'mpf_unreferenced_trailing_data','t','t','t');
+                """);
+            Assert.AreEqual(1L, Scalar<long>(connection, "SELECT count(*) FROM image_inspection_runs WHERE status='blocked';"));
+            Assert.AreEqual(
+                "mpf_unreferenced_trailing_data",
+                Scalar<string>(connection, "SELECT failure_code FROM image_inspection_runs;"));
+        }
+
+        new BusinessDatabase(scope.DatabasePath).Initialize();
+
+        using var upgraded = OpenRaw(scope.DatabasePath);
+        Assert.AreEqual(9L, Scalar<long>(upgraded, "PRAGMA user_version;"));
+        Assert.AreEqual(1L, Scalar<long>(upgraded, "SELECT count(*) FROM image_inspection_runs WHERE status='blocked';"));
+        Assert.AreEqual(
+            ImageInspectionSupportPolicy.UnsupportedVendorPayload,
+            Scalar<string>(upgraded, "SELECT support_disposition FROM image_inspection_runs;"));
+        Assert.AreEqual(
+            ImageInspectionSupportPolicy.Version,
+            Scalar<string>(upgraded, "SELECT support_policy_version FROM image_inspection_runs;"));
+        AssertSqlRejected(upgraded,
+            "UPDATE image_inspection_runs SET support_disposition='image_not_processable' WHERE inspection_run_id='upgrade-inspection';");
     }
 
     [TestMethod]
@@ -310,16 +387,16 @@ public sealed class BusinessDatabaseTests
         seed?.Invoke(connection);
     }
 
-    private static void CreateVersionSevenDatabase(string databasePath)
+    private static void CreateDatabaseAtVersion(string databasePath, int version)
     {
         var assembly = typeof(BusinessDatabase).Assembly;
         var resources = assembly.GetManifestResourceNames()
             .Where(name => name.Contains(".Migrations.Business.", StringComparison.Ordinal) &&
                            name.EndsWith(".sql", StringComparison.Ordinal))
             .Order(StringComparer.Ordinal)
-            .Take(7)
+            .Take(version)
             .ToArray();
-        Assert.HasCount(7, resources);
+        Assert.HasCount(version, resources);
 
         using var connection = OpenRaw(databasePath);
         Execute(connection,
@@ -346,7 +423,7 @@ public sealed class BusinessDatabaseTests
             register.ExecuteNonQuery();
         }
 
-        Execute(connection, "PRAGMA user_version=7;");
+        Execute(connection, $"PRAGMA user_version={version};");
     }
 
     private static T Scalar<T>(SqliteConnection connection, string sql)

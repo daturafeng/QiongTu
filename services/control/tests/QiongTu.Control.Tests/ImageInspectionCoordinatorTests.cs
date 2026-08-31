@@ -61,10 +61,36 @@ public sealed class ImageInspectionCoordinatorTests
 
         Assert.AreEqual("blocked", scope.Scalar<string>("SELECT status FROM image_inspection_runs;"));
         Assert.AreEqual("unsupported_image_container", scope.Scalar<string>("SELECT failure_code FROM image_inspection_runs;"));
+        Assert.AreEqual(
+            ImageInspectionSupportPolicy.ImageNotProcessable,
+            scope.Scalar<string>("SELECT support_disposition FROM image_inspection_runs;"));
+        Assert.AreEqual(
+            ImageInspectionSupportPolicy.Version,
+            scope.Scalar<string>("SELECT support_policy_version FROM image_inspection_runs;"));
         Assert.AreEqual(0L, scope.Scalar<long>("SELECT count(*) FROM images;"));
         Assert.AreEqual(0L, scope.Scalar<long>("SELECT count(*) FROM image_frames;"));
         Assert.AreEqual(0L, scope.Scalar<long>("SELECT count(*) FROM file_object_roles WHERE object_role='normalized_image_frame';"));
         Assert.AreEqual("available", scope.Scalar<string>("SELECT status FROM image_import_entries;"));
+    }
+
+    [TestMethod]
+    public async Task DatabaseRejectsFailureCodeAndSupportDispositionMismatch()
+    {
+        await using var scope = await InspectionScope.CreateAsync([1, 2, 3, 4]);
+        _ = new ImageFrameCatalog(scope.Database).EnsureRun(InspectionScope.ImportEntryId);
+        using var connection = scope.Database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            UPDATE image_inspection_runs
+            SET status='blocked', failure_code='mpf_unreferenced_trailing_data',
+                support_disposition='image_not_processable',
+                support_policy_version='vendor-payload-support.v1',
+                completed_at_utc='2026-08-31T00:00:01Z', updated_at_utc='2026-08-31T00:00:01Z';
+            """;
+
+        _ = Assert.Throws<SqliteException>(() => command.ExecuteNonQuery());
+        Assert.AreEqual("pending", scope.Scalar<string>("SELECT status FROM image_inspection_runs;"));
     }
 
     [TestMethod]
@@ -212,11 +238,59 @@ public sealed class ImageInspectionCoordinatorTests
 
         Assert.AreEqual("blocked", scope.Scalar<string>("SELECT status FROM image_inspection_runs;"));
         Assert.AreEqual("unsupported_image_container", scope.Scalar<string>("SELECT failure_code FROM image_inspection_runs;"));
+        Assert.AreEqual(
+            ImageInspectionSupportPolicy.ImageNotProcessable,
+            scope.Scalar<string>("SELECT support_disposition FROM image_inspection_runs;"));
+        Assert.AreEqual(
+            ImageInspectionSupportPolicy.Version,
+            scope.Scalar<string>("SELECT support_policy_version FROM image_inspection_runs;"));
         Assert.AreEqual(0L, scope.Scalar<long>("SELECT count(*) FROM images;"));
         Assert.AreEqual(0L, scope.Scalar<long>("SELECT count(*) FROM image_frames;"));
         Assert.AreEqual(0L, scope.Scalar<long>("SELECT count(*) FROM file_object_roles WHERE object_role='normalized_image_frame';"));
         Assert.AreEqual(1L, scope.Scalar<long>("SELECT count(*) FROM file_objects;"));
         Assert.AreEqual("available", scope.Scalar<string>("SELECT status FROM image_import_entries;"));
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    public async Task ProprietaryMpfTailIsUnsupportedPerImageWhileSameBatchVisibleImageCompletes()
+    {
+        var standardMpo = CreateSyntheticMpo(SyntheticPrimaryJpeg, SyntheticAuxiliaryJpeg);
+        var proprietaryTail = new byte[] { 0xff, 0xff, 0xdf, 0x51, 0x54, 0x01, 0x02, 0x03 };
+        var unsupportedSource = new byte[standardMpo.Length + proprietaryTail.Length];
+        standardMpo.CopyTo(unsupportedSource, 0);
+        proprietaryTail.CopyTo(unsupportedSource, standardMpo.Length);
+
+        await using var scope = await InspectionScope.CreateAsync(unsupportedSource);
+        var visibleEntryId = await scope.AddBatchSourceAsync("visible", SyntheticPrimaryJpeg);
+        var realProbe = new IsolatedImageCasProbeClient(
+            new ImageCasProbeOptions(Timeout: TimeSpan.FromSeconds(20)),
+            CreateDevelopmentProbeStartInfo);
+        await using var coordinator = scope.CreateCoordinator(realProbe);
+
+        await coordinator.EnqueueImportEntryAsync(InspectionScope.ImportEntryId);
+        await coordinator.EnqueueImportEntryAsync(visibleEntryId);
+        await WaitForIdleAsync(coordinator);
+
+        Assert.AreEqual(
+            "blocked",
+            scope.Scalar<string>($"SELECT status FROM image_inspection_runs WHERE import_entry_id='{InspectionScope.ImportEntryId}';"));
+        Assert.AreEqual(
+            "mpf_unreferenced_trailing_data",
+            scope.Scalar<string>($"SELECT failure_code FROM image_inspection_runs WHERE import_entry_id='{InspectionScope.ImportEntryId}';"));
+        Assert.AreEqual(
+            ImageInspectionSupportPolicy.UnsupportedVendorPayload,
+            scope.Scalar<string>($"SELECT support_disposition FROM image_inspection_runs WHERE import_entry_id='{InspectionScope.ImportEntryId}';"));
+        Assert.AreEqual(
+            ImageInspectionSupportPolicy.Version,
+            scope.Scalar<string>($"SELECT support_policy_version FROM image_inspection_runs WHERE import_entry_id='{InspectionScope.ImportEntryId}';"));
+        Assert.AreEqual(
+            "completed",
+            scope.Scalar<string>($"SELECT status FROM image_inspection_runs WHERE import_entry_id='{visibleEntryId}';"));
+        Assert.AreEqual(1L, scope.Scalar<long>("SELECT count(*) FROM images;"));
+        Assert.AreEqual(1L, scope.Scalar<long>("SELECT count(*) FROM image_frames;"));
+        Assert.AreEqual(2L, scope.Scalar<long>("SELECT count(*) FROM image_import_entries WHERE status='available';"));
+        Assert.AreEqual("completed", scope.Scalar<string>("SELECT status FROM image_import_sessions;"));
     }
 
     [TestMethod]
@@ -777,6 +851,54 @@ public sealed class ImageInspectionCoordinatorTests
             command.Parameters.AddWithValue("$sha256", PublishedSource.Sha256);
             command.Parameters.AddWithValue("$byte_length", PublishedSource.ByteLength);
             command.Parameters.AddWithValue("$object_key", PublishedSource.ObjectKey);
+            command.ExecuteNonQuery();
+            return entryId;
+        }
+
+        public async Task<string> AddBatchSourceAsync(string suffix, byte[] sourceBytes)
+        {
+            await using var input = new MemoryStream(sourceBytes, writable: false);
+            var stage = await Store.StageAsync(input);
+            var published = await Store.PublishAsync(stage);
+            var entryId = $"import-entry-inspection-{suffix}";
+            var fileObjectId = $"source-object-{suffix}";
+            using var connection = Database.OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText =
+                """
+                UPDATE image_import_sessions
+                SET total_entry_count = 2, available_entry_count = 2,
+                    updated_at_utc = '2026-08-31T00:00:01Z'
+                WHERE import_session_id = 'session-inspection';
+                INSERT INTO file_objects(
+                    file_object_id,object_kind,hash_algorithm,content_hash,byte_length,media_type,
+                    object_key,storage_state,created_at_utc,available_at_utc)
+                VALUES(
+                    $file_object_id,'source_image','sha256',$sha256,$byte_length,'image/jpeg',
+                    $object_key,'available','2026-08-31T00:00:01Z','2026-08-31T00:00:01Z');
+                INSERT INTO file_object_roles(file_object_id,object_role,created_at_utc)
+                VALUES($file_object_id,'source_image','2026-08-31T00:00:01Z');
+                INSERT INTO image_import_entries(
+                    import_entry_id,import_session_id,dataset_version_id,source_entry_key,display_name,sort_index,
+                    byte_length_snapshot,status,stage_receipt_id,stage_receipt_sha256,stage_receipt_byte_length,
+                    stage_receipt_created_at_utc,expected_content_hash,expected_byte_length,expected_object_key,
+                    file_object_id,created_at_utc,updated_at_utc,terminal_at_utc)
+                VALUES(
+                    $entry_id,'session-inspection','dataset-version-inspection',$entry_key,'DJI_VISIBLE.JPG',1,
+                    $byte_length,'available',$stage_id,$stage_sha256,$stage_byte_length,
+                    $stage_created_at_utc,$sha256,$byte_length,$object_key,
+                    $file_object_id,'2026-08-31T00:00:01Z','2026-08-31T00:00:01Z','2026-08-31T00:00:01Z');
+                """;
+            command.Parameters.AddWithValue("$entry_id", entryId);
+            command.Parameters.AddWithValue("$entry_key", Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(entryId))).ToLowerInvariant());
+            command.Parameters.AddWithValue("$file_object_id", fileObjectId);
+            command.Parameters.AddWithValue("$sha256", published.Sha256);
+            command.Parameters.AddWithValue("$byte_length", published.ByteLength);
+            command.Parameters.AddWithValue("$object_key", published.ObjectKey);
+            command.Parameters.AddWithValue("$stage_id", stage.StageId);
+            command.Parameters.AddWithValue("$stage_sha256", stage.Sha256);
+            command.Parameters.AddWithValue("$stage_byte_length", stage.ByteLength);
+            command.Parameters.AddWithValue("$stage_created_at_utc", stage.CreatedAtUtc.ToString("O"));
             command.ExecuteNonQuery();
             return entryId;
         }

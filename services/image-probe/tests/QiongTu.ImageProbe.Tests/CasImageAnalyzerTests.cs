@@ -120,6 +120,61 @@ public sealed class CasImageAnalyzerTests
     }
 
     [TestMethod]
+    public void Analyze_TiffUnsupportedPhotometric_ReturnsStableBlockedReason()
+    {
+        var malformed = CreateClassicRgbTiff(pageCount: 1, bitsPerSample: 8);
+        WriteTiffIfdEntryValue(malformed, pageIndex: 0, entryIndex: 4, value: 4);
+
+        var result = AnalyzeFormalObject(malformed);
+
+        Assert.AreEqual("blocked", result.Status);
+        CollectionAssert.Contains(result.ReasonCodes.ToArray(), "tiff_photometric_not_supported");
+        AssertPrivacy(result);
+    }
+
+    [TestMethod]
+    public void Analyze_TiffUnsupportedCompression_ReturnsStableBlockedReason()
+    {
+        var malformed = CreateClassicRgbTiff(pageCount: 1, bitsPerSample: 8);
+        WriteTiffIfdEntryValue(malformed, pageIndex: 0, entryIndex: 3, value: 99);
+
+        var result = AnalyzeFormalObject(malformed);
+
+        Assert.AreEqual("blocked", result.Status);
+        CollectionAssert.Contains(result.ReasonCodes.ToArray(), "tiff_compression_not_supported");
+        AssertPrivacy(result);
+    }
+
+    [TestMethod]
+    public void Analyze_JpegDeclaredPixelBomb_ReturnsStableBlockedReason()
+    {
+        var malformed = ValidJpeg.ToArray();
+        var sof = FindMarker(malformed, 0xc0);
+        BinaryPrimitives.WriteUInt16BigEndian(malformed.AsSpan(sof + 5, 2), ushort.MaxValue);
+        BinaryPrimitives.WriteUInt16BigEndian(malformed.AsSpan(sof + 7, 2), ushort.MaxValue);
+
+        var result = AnalyzeFormalObject(malformed);
+
+        Assert.AreEqual("blocked", result.Status);
+        CollectionAssert.Contains(result.ReasonCodes.ToArray(), "frame_pixel_limit_exceeded");
+        AssertPrivacy(result);
+    }
+
+    [TestMethod]
+    public void Analyze_TiffDeclaredPixelBomb_ReturnsStableBlockedReason()
+    {
+        var malformed = CreateClassicRgbTiff(pageCount: 1, bitsPerSample: 8);
+        WriteTiffIfdEntryValue(malformed, pageIndex: 0, entryIndex: 0, value: 1_000_001);
+        WriteTiffIfdEntryValue(malformed, pageIndex: 0, entryIndex: 1, value: 1_000);
+
+        var result = AnalyzeFormalObject(malformed);
+
+        Assert.AreEqual("blocked", result.Status);
+        CollectionAssert.Contains(result.ReasonCodes.ToArray(), "frame_pixel_limit_exceeded");
+        AssertPrivacy(result);
+    }
+
+    [TestMethod]
     public void Analyze_TiffIfdCycle_ReturnsStableBlockedReason()
     {
         var malformed = CreateClassicRgbTiff(pageCount: 1, bitsPerSample: 8);
@@ -169,6 +224,33 @@ public sealed class CasImageAnalyzerTests
 
         Assert.AreEqual("blocked", result.Status);
         CollectionAssert.Contains(result.ReasonCodes.ToArray(), "mpf_ranges_overlap");
+        AssertPrivacy(result);
+    }
+
+    [TestMethod]
+    public void Analyze_MpfTruncatedSecondFrame_ReturnsStableBlockedReason()
+    {
+        var malformed = CreateMpo(ValidJpeg, AuxiliaryJpeg[..^1]);
+
+        var result = AnalyzeFormalObject(malformed);
+
+        Assert.AreEqual("blocked", result.Status);
+        CollectionAssert.Contains(result.ReasonCodes.ToArray(), "jpeg_scan_truncated");
+        AssertPrivacy(result);
+    }
+
+    [TestMethod]
+    public void Analyze_MpfEntryTableOutOfBounds_ReturnsStableBlockedReason()
+    {
+        var malformed = ValidMpo.ToArray();
+        BinaryPrimitives.WriteUInt32LittleEndian(
+            malformed.AsSpan(FindMpfEntriesOffsetField(malformed), 4),
+            uint.MaxValue);
+
+        var result = AnalyzeFormalObject(malformed);
+
+        Assert.AreEqual("blocked", result.Status);
+        CollectionAssert.Contains(result.ReasonCodes.ToArray(), "mpf_entries_out_of_bounds");
         AssertPrivacy(result);
     }
 
@@ -547,6 +629,15 @@ public sealed class CasImageAnalyzerTests
         return checked(tiffBase + ifdOffset + 2 + 8);
     }
 
+    private static int FindMpfEntriesOffsetField(byte[] bytes)
+    {
+        var mpf = bytes.AsSpan().IndexOf("MPF\0"u8);
+        Assert.IsGreaterThanOrEqualTo(0, mpf);
+        var tiffBase = mpf + 4;
+        var ifdOffset = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(tiffBase + 4, 4)));
+        return checked(tiffBase + ifdOffset + 2 + (2 * 12) + 8);
+    }
+
     private static int FindMarker(byte[] bytes, byte marker)
     {
         for (var index = 0; index < bytes.Length - 1; index++)
@@ -579,6 +670,15 @@ public sealed class CasImageAnalyzerTests
 
         jpeg.AsSpan(2).CopyTo(result.AsSpan(writeOffset));
         return result;
+    }
+
+    private static void WriteTiffIfdEntryValue(byte[] bytes, int pageIndex, int entryIndex, uint value)
+    {
+        const int firstIfdOffset = 8;
+        const int entryCount = 10;
+        const int ifdLength = 2 + (entryCount * 12) + 4;
+        var valueOffset = firstIfdOffset + (pageIndex * ifdLength) + 2 + (entryIndex * 12) + 8;
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(valueOffset, 4), value);
     }
 
     private static byte[] AddJpegExifOrientation(byte[] jpeg, ushort orientation)

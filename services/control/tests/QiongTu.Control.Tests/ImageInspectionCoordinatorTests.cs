@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
@@ -8,6 +10,11 @@ namespace QiongTu.Control.Tests;
 [TestClass]
 public sealed class ImageInspectionCoordinatorTests
 {
+    private static readonly byte[] SyntheticPrimaryJpeg = Convert.FromBase64String(
+        "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBT/wAARCAADAAQDAREAAhEBAxEB/8QAFAABAAAAAAAAAAAAAAAAAAAACP/EABQQAQAAAAAAAAAAAAAAAAAAAAD/xAAVAQEBAAAAAAAAAAAAAAAAAAAHCf/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/ADoDFU3/2Q==");
+    private static readonly byte[] SyntheticAuxiliaryJpeg = Convert.FromBase64String(
+        "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBT/wAARCAABAAIDAREAAhEBAxEB/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/xAAVAQEBAAAAAAAAAAAAAAAAAAAGCf/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AD3VTB3/2Q==");
+
     [TestMethod]
     public async Task JpegManifestPreservesOrientationReusesSourceAndIsIdempotent()
     {
@@ -144,6 +151,72 @@ public sealed class ImageInspectionCoordinatorTests
         using var memory = new MemoryStream();
         await stream.CopyToAsync(memory);
         CollectionAssert.AreEqual(source[8..20], memory.ToArray());
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    public async Task JpegNamedSyntheticMpoRunsRealProbePublishesHighResolutionFrameByteExactAndIsIdempotent()
+    {
+        var mpo = CreateSyntheticMpo(SyntheticPrimaryJpeg, SyntheticAuxiliaryJpeg);
+        var expectedPrimaryLength = mpo.Length - SyntheticAuxiliaryJpeg.Length;
+        await using var scope = await InspectionScope.CreateAsync(mpo);
+        var realProbe = new IsolatedImageCasProbeClient(
+            new ImageCasProbeOptions(Timeout: TimeSpan.FromSeconds(20)),
+            CreateDevelopmentProbeStartInfo);
+        await using var coordinator = scope.CreateCoordinator(realProbe);
+
+        await coordinator.EnqueueImportEntryAsync(InspectionScope.ImportEntryId);
+        await WaitForIdleAsync(coordinator);
+        await coordinator.EnqueueImportEntryAsync(InspectionScope.ImportEntryId);
+        await WaitForIdleAsync(coordinator);
+
+        Assert.AreEqual("completed", scope.Scalar<string>("SELECT status FROM image_inspection_runs;"));
+        Assert.AreEqual(0L, scope.Scalar<long>("SELECT primary_frame_index FROM images;"));
+        Assert.AreEqual(4L, scope.Scalar<long>("SELECT width FROM images;"));
+        Assert.AreEqual(3L, scope.Scalar<long>("SELECT height FROM images;"));
+        Assert.AreEqual(2L, scope.Scalar<long>("SELECT count(*) FROM image_frames;"));
+        Assert.AreEqual(1L, scope.Scalar<long>("SELECT count(*) FROM images;"));
+        Assert.AreEqual(2L, scope.Scalar<long>("SELECT count(*) FROM file_objects;"));
+        Assert.AreEqual(1L, scope.Scalar<long>("SELECT count(*) FROM file_object_roles WHERE object_role='normalized_image_frame';"));
+
+        using var connection = scope.Database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT f.content_hash, f.byte_length, f.object_key
+            FROM images i
+            JOIN file_objects f ON f.file_object_id = i.normalized_file_object_id;
+            """;
+        using var reader = command.ExecuteReader();
+        Assert.IsTrue(reader.Read());
+        var normalized = new PublishedObject(reader.GetString(0), reader.GetInt64(1), reader.GetString(2), Deduplicated: false);
+        await using var normalizedStream = await scope.Store.OpenPublishedReadAsync(normalized);
+        using var normalizedBytes = new MemoryStream();
+        await normalizedStream.CopyToAsync(normalizedBytes);
+        CollectionAssert.AreEqual(mpo[..expectedPrimaryLength], normalizedBytes.ToArray());
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    public async Task JpegNamedUnsupportedContentRunsRealProbeAndBlocksWithoutManifestPollution()
+    {
+        await using var scope = await InspectionScope.CreateAsync(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"/>"u8.ToArray());
+        var realProbe = new IsolatedImageCasProbeClient(
+            new ImageCasProbeOptions(Timeout: TimeSpan.FromSeconds(20)),
+            CreateDevelopmentProbeStartInfo);
+        await using var coordinator = scope.CreateCoordinator(realProbe);
+
+        await coordinator.EnqueueImportEntryAsync(InspectionScope.ImportEntryId);
+        await WaitForIdleAsync(coordinator);
+
+        Assert.AreEqual("blocked", scope.Scalar<string>("SELECT status FROM image_inspection_runs;"));
+        Assert.AreEqual("unsupported_image_container", scope.Scalar<string>("SELECT failure_code FROM image_inspection_runs;"));
+        Assert.AreEqual(0L, scope.Scalar<long>("SELECT count(*) FROM images;"));
+        Assert.AreEqual(0L, scope.Scalar<long>("SELECT count(*) FROM image_frames;"));
+        Assert.AreEqual(0L, scope.Scalar<long>("SELECT count(*) FROM file_object_roles WHERE object_role='normalized_image_frame';"));
+        Assert.AreEqual(1L, scope.Scalar<long>("SELECT count(*) FROM file_objects;"));
+        Assert.AreEqual("available", scope.Scalar<string>("SELECT status FROM image_import_entries;"));
     }
 
     [TestMethod]
@@ -433,6 +506,106 @@ public sealed class ImageInspectionCoordinatorTests
         using var command = connection.CreateCommand();
         command.CommandText = sql;
         command.ExecuteNonQuery();
+    }
+
+    private static byte[] CreateSyntheticMpo(byte[] primary, byte[] auxiliary)
+    {
+        const int tiffHeaderLength = 8;
+        const int ifdLength = 2 + (3 * 12) + 4;
+        const int mpEntryOffset = tiffHeaderLength + ifdLength;
+        const int mpEntryBytes = 2 * 16;
+        var tiff = new byte[mpEntryOffset + mpEntryBytes];
+        tiff[0] = (byte)'I';
+        tiff[1] = (byte)'I';
+        BinaryPrimitives.WriteUInt16LittleEndian(tiff.AsSpan(2, 2), 42);
+        BinaryPrimitives.WriteUInt32LittleEndian(tiff.AsSpan(4, 4), 8);
+        BinaryPrimitives.WriteUInt16LittleEndian(tiff.AsSpan(8, 2), 3);
+        WriteIfdEntry(tiff, 10, 0xb000, 7, 4, 0x30303130);
+        WriteIfdEntry(tiff, 22, 0xb001, 4, 1, 2);
+        WriteIfdEntry(tiff, 34, 0xb002, 7, mpEntryBytes, mpEntryOffset);
+        BinaryPrimitives.WriteUInt32LittleEndian(tiff.AsSpan(46, 4), 0);
+
+        var app2PayloadLength = 4 + tiff.Length;
+        var app2LengthField = checked((ushort)(app2PayloadLength + 2));
+        var app2 = new byte[2 + 2 + app2PayloadLength];
+        app2[0] = 0xff;
+        app2[1] = 0xe2;
+        BinaryPrimitives.WriteUInt16BigEndian(app2.AsSpan(2, 2), app2LengthField);
+        "MPF\0"u8.CopyTo(app2.AsSpan(4, 4));
+        tiff.CopyTo(app2, 8);
+
+        var firstLength = checked(primary.Length + app2.Length);
+        const int mpBase = 2 + 2 + 2 + 4;
+        WriteMpEntry(app2, 8 + mpEntryOffset, firstLength, 0);
+        WriteMpEntry(app2, 8 + mpEntryOffset + 16, auxiliary.Length, firstLength - mpBase);
+
+        var result = new byte[firstLength + auxiliary.Length];
+        primary.AsSpan(0, 2).CopyTo(result);
+        app2.CopyTo(result, 2);
+        primary.AsSpan(2).CopyTo(result.AsSpan(2 + app2.Length));
+        auxiliary.CopyTo(result, firstLength);
+        return result;
+    }
+
+    private static void WriteIfdEntry(
+        byte[] bytes,
+        int offset,
+        ushort tag,
+        ushort type,
+        uint count,
+        uint value)
+    {
+        BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(offset, 2), tag);
+        BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(offset + 2, 2), type);
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(offset + 4, 4), count);
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(offset + 8, 4), value);
+    }
+
+    private static void WriteMpEntry(byte[] app2, int offset, int size, int dataOffset)
+    {
+        BinaryPrimitives.WriteUInt32LittleEndian(app2.AsSpan(offset, 4), 0x020003);
+        BinaryPrimitives.WriteUInt32LittleEndian(app2.AsSpan(offset + 4, 4), checked((uint)size));
+        BinaryPrimitives.WriteUInt32LittleEndian(app2.AsSpan(offset + 8, 4), checked((uint)dataOffset));
+        BinaryPrimitives.WriteUInt16LittleEndian(app2.AsSpan(offset + 12, 2), 0);
+        BinaryPrimitives.WriteUInt16LittleEndian(app2.AsSpan(offset + 14, 2), 0);
+    }
+
+    private static ProcessStartInfo CreateDevelopmentProbeStartInfo()
+    {
+        var executablePath = Path.Combine(
+            FindRepositoryRoot(),
+            "services",
+            "image-probe",
+            "src",
+            "QiongTu.ImageProbe",
+            "bin",
+#if DEBUG
+            "Debug",
+#else
+            "Release",
+#endif
+            "net10.0",
+            "win-x64",
+            "QiongTu.ImageProbe.exe");
+        var startInfo = new ProcessStartInfo { FileName = executablePath };
+        startInfo.ArgumentList.Add(ImageProbeProtocol.StdioArgument);
+        return startInfo;
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "Directory.Build.props")))
+            {
+                return directory.FullName;
+            }
+
+            directory = directory.Parent;
+        }
+
+        throw new DirectoryNotFoundException("The repository root could not be located for the image probe test.");
     }
 
     private static async Task WaitForIdleAsync(ImageInspectionCoordinator coordinator)

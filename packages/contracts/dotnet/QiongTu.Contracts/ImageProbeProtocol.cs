@@ -8,8 +8,12 @@ public static class ImageProbeProtocol
     public const string CasImageProfile = "cas-image.v1";
     public const string ImageMetadataV1 = "qiongtu.image-probe.image-metadata.v1";
     public const string ImageMetadataProfile = "image-metadata.v1";
+    public const string CasPositioningAuxV1 = "qiongtu.image-probe.cas-positioning-aux.v1";
+    public const string CasPositioningAuxProfile = "cas-positioning-aux.v1";
     public const string DjiMetadataMapV1 = "dji-metadata-map.v1";
     public const string MetadataConflictV1 = "metadata-conflict.v1";
+    public const string DjiMrkParserV1 = "dji-mrk-parser.v1";
+    public const string DjiMrkQualityPolicyV1 = "dji-mrk-quality-policy.v1";
     public const string StdioArgument = "--stdio";
     public const int MaximumHeaderBytes = 4 * 1024;
     public const int MaximumPayloadBytes = 16 * 1024 * 1024;
@@ -26,6 +30,10 @@ public static class ImageProbeProtocol
     public const int MaximumCasMetadataBytes = 16 * 1024 * 1024;
     public const int MaximumMetadataOutputBytes = MaximumCasOutputBytes;
     public const int MaximumMetadataTextBytes = 512;
+    public const int MaximumPositioningAuxOutputBytes = MaximumCasOutputBytes;
+    public const long MaximumPositioningAuxObjectBytes = 64L * 1024 * 1024;
+    public const int MaximumPositioningAuxLineBytes = 4 * 1024;
+    public const int MaximumPositioningAuxLineCount = 100_000;
     public const int MaximumEvidenceKinds = 16;
     public const int MaximumReasonCodes = 16;
 }
@@ -138,4 +146,37 @@ public sealed record ImageProbeImageMetadataResult(
     IReadOnlyList<ImageProbeImageMetadataField> Fields,
     IReadOnlyList<string> ReasonCodes,
     ImageProbeImageMetadataParserIdentity Parser,
+    ImageProbePrivacy Privacy);
+
+public sealed record ImageProbeCasPositioningAuxRequestHeader(
+    string SchemaVersion,
+    string Profile,
+    string ObjectKind,
+    string AuxiliaryType,
+    int AssociationItemCount,
+    string FormalObjectRoot,
+    string ObjectKey,
+    string ExpectedSha256,
+    long ExpectedByteLength);
+
+public sealed record ImageProbeCasPositioningAuxParserIdentity(
+    string ProductParser,
+    string ProductParserVersion,
+    string AuxiliaryParserVersion,
+    string QualityPolicyVersion);
+
+public sealed record ImageProbeCasPositioningAuxResult(
+    string SchemaVersion,
+    string Profile,
+    string ParseState,
+    string QualityState,
+    string ObjectKind,
+    string AuxiliaryType,
+    string SequenceState,
+    string CoverageState,
+    string StandardDeviationState,
+    string RtkQualityState,
+    string CanonicalInventoryHash,
+    IReadOnlyList<string> ReasonCodes,
+    ImageProbeCasPositioningAuxParserIdentity Parser,
     ImageProbePrivacy Privacy);

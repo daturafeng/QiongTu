@@ -33,6 +33,10 @@ public static class ControlMethods
     public const string ImageImportPreflightStart = "image-import-preflight.start";
     public const string ImageImportPreflightGet = "image-import-preflight.get";
     public const string ImageImportPreflightItemList = "image-import-preflight-item.list";
+    public const string PositioningAuxImportGet = "positioning-aux-import.get";
+    public const string PositioningAuxImportResume = "positioning-aux-import.resume";
+    public const string PositioningAuxImportCancel = "positioning-aux-import.cancel";
+    public const string PositioningAuxFileList = "positioning-aux-file.list";
 }
 
 public sealed record ControlRequest(
@@ -505,3 +509,70 @@ public sealed record ImageImportPreflightItem(
     DateTimeOffset UpdatedAtUtc,
     DateTimeOffset? CompletedAtUtc,
     ImageImportPreflightPrivacy Privacy);
+
+public sealed record PositioningAuxImportGetParameters(string RunId);
+
+public sealed record PositioningAuxImportResumeParameters(
+    string RunId,
+    string SourceRootPath);
+
+public sealed record PositioningAuxImportCancelParameters(string RunId);
+
+public sealed record PositioningAuxFileListParameters(
+    string? DatasetVersionId,
+    string? RunId,
+    int? PageSize,
+    string? Cursor);
+
+public sealed record PositioningAuxPrivacy(
+    bool PathsIncluded,
+    bool LocatorsIncluded,
+    bool SourceKeysIncluded,
+    bool HashesIncluded,
+    bool ObjectKeysIncluded,
+    bool StageReceiptsIncluded,
+    bool RawRecordsIncluded,
+    bool CoordinatesIncluded,
+    bool TimestampsIncluded,
+    bool OwnerSampleStatisticsIncluded);
+
+public sealed record PositioningAuxImportRun(
+    string RunId,
+    string ImportSessionId,
+    string DatasetVersionId,
+    string Status,
+    int TotalFileCount,
+    int CompletedFileCount,
+    int FailedFileCount,
+    string AssociationProfile,
+    string AssociationPolicyVersion,
+    string ParserProfile,
+    string ParserName,
+    string ParserVersion,
+    string? LastErrorCode,
+    DateTimeOffset CreatedAtUtc,
+    DateTimeOffset? StartedAtUtc,
+    DateTimeOffset UpdatedAtUtc,
+    DateTimeOffset? CompletedAtUtc,
+    DateTimeOffset? CancelledAtUtc,
+    PositioningAuxPrivacy Privacy);
+
+public sealed record PositioningAuxFile(
+    string PositioningAuxFileId,
+    string RunId,
+    string DatasetVersionId,
+    string AuxType,
+    string RetentionState,
+    string ParseState,
+    string QualityState,
+    string ParserProfile,
+    string ParserName,
+    string ParserVersion,
+    string UsageState,
+    string? ReasonCode,
+    DateTimeOffset CreatedAtUtc,
+    DateTimeOffset UpdatedAtUtc,
+    DateTimeOffset? RetainedAtUtc,
+    DateTimeOffset? ParsedAtUtc,
+    DateTimeOffset? QualityCheckedAtUtc,
+    PositioningAuxPrivacy Privacy);

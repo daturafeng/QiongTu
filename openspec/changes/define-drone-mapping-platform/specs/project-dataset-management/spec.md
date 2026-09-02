@@ -57,7 +57,15 @@
 - **THEN** 系统保留原数据库文件、拒绝自动重建并提供可诊断失败
 
 ### Requirement: 领域关系在持久层保持一致
-系统 SHALL 使用受约束的状态列和外键保存项目、数据集版本、复制前来源预检运行/条目、文件对象及其不可变用途角色、可恢复影像检查、影像与帧血缘、可恢复影像元数据运行与逐字段清单、定位辅助文件、任务、执行、成果、成果文件和质量报告之间的权威关系。来源预检运行 MUST 绑定一个导入会话和同一草稿数据集版本，只保存固定 parser profile/version、有界计数、结论和脱敏原因；正式影像检查 MUST 绑定可用且具有 `source_image` 角色的 canonical 导入条目，损坏或不支持结论不得回写或放宽 3.1 已完成导入条目的终态。元数据运行 MUST 绑定 completed 影像检查和该 image 的可用 `normalized_image_frame` 对象；completed 元数据运行 MUST 具有固定 parser/mapping/conflict-policy 身份、完整字段终态和一致库存指纹，blocked 元数据运行 MUST 不保存部分字段。相同内容身份 SHALL 只对应一个文件对象，但 MAY 具有多个幂等、不可变角色。封存的数据集版本 MUST 在持久层拒绝原位更新或删除；completed/blocked 元数据运行、对应字段与 image 摘要 SHALL 不可变；文件对象 SHALL 只保存受控对象键和内容元数据，不得在业务数据库中保存大二进制或任意绝对文件路径。
+系统 SHALL 使用受约束的状态列和外键保存项目、数据集版本、复制前来源预检运行/条目、文件对象及其不可变用途角色、可恢复影像检查、影像与帧血缘、可恢复影像元数据运行与逐字段清单、可恢复定位辅助导入/文件/执行级使用证据、任务、执行、成果、成果文件和质量报告之间的权威关系。来源预检运行 MUST 绑定一个导入会话和同一草稿数据集版本，只保存固定 parser profile/version、有界计数、结论和脱敏原因；正式影像检查 MUST 绑定可用且具有 `source_image` 角色的 canonical 导入条目，损坏或不支持结论不得回写或放宽 3.1 已完成导入条目的终态。元数据运行 MUST 绑定 completed 影像检查和该 image 的可用 `normalized_image_frame` 对象；completed 元数据运行 MUST 具有固定 parser/mapping/conflict-policy 身份、完整字段终态和一致库存指纹，blocked 元数据运行 MUST 不保存部分字段。正式定位辅助导入 MUST 绑定同一草稿数据集版本、导入会话和 completed/dji_supported 来源预检 sidecar 条目；retained 文件 MUST 绑定 available 内容对象及 `positioning_aux` 角色，解析与质量终态必须携带一致固定策略证据，`used` 必须绑定同数据集 job execution 且不得由文件存在或预检证据推导。相同内容身份 SHALL 只对应一个文件对象，但 MAY 具有多个幂等、不可变角色。封存的数据集版本 MUST 在持久层拒绝原位更新或删除；completed/blocked 元数据运行、对应字段与 image 摘要、定位辅助身份/终态/usage SHALL 不可变；文件对象 SHALL 只保存受控对象键和内容元数据，不得在业务数据库中保存大二进制或任意绝对文件路径。
+
+#### Scenario: 定位辅助记录不能绕过来源与对象边界
+- **WHEN** 任一写入尝试把 pending/out-of-scope/unconfirmed 来源、非 sidecar 预检条目、非 available 文件对象、缺少 `positioning_aux` 角色或跨数据集引用登记为正式定位辅助文件
+- **THEN** 数据库通过外键、检查约束或触发器拒绝该写入，既有来源预检、影像清单和正式对象保持不变
+
+#### Scenario: 定位辅助解析质量与使用状态不能互相冒充
+- **WHEN** 任一写入尝试把 not-attempted/unsupported/failed 解析标记为质量通过，或把未 retained、未 parsed、质量未通过的辅助文件记录为某次执行已使用
+- **THEN** 数据库拒绝不一致状态组合；没有 execution 级 usage 行表示尚无实际使用证据，不能由调用方补写数据集级“已使用”标志
 
 #### Scenario: 封存后修改数据集版本
 - **WHEN** 任一调用方尝试更新或删除已经封存的数据集版本记录

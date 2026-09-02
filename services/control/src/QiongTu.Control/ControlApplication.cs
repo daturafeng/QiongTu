@@ -61,15 +61,29 @@ public sealed class ControlApplication
             options: null,
             onCanonicalAvailable: imageInspectionCoordinator.EnqueueImportEntryAsync);
         var imageImportPreflightCatalog = new ImageImportPreflightCatalog(businessDatabase);
+        var positioningAuxCatalog = new PositioningAuxCatalog(businessDatabase);
+        await using var positioningAuxCoordinator = new PositioningAuxCoordinator(
+            positioningAuxCatalog,
+            imageImportPreflightCatalog,
+            imageImportSourceSecurity,
+            imageImportSourceDiscovery,
+            objectStore,
+            new IsolatedPositioningAuxProbeClient(),
+            _paths);
         var imageSourcePreflightProbe = new ImageSourcePreflightProbe(imageImportSourceDiscovery);
         await using var imageImportPreflightCoordinator = new ImageImportPreflightCoordinator(
             imageImportPreflightCatalog,
             imageImportSourceSecurity,
             imageImportSourceDiscovery,
             imageSourcePreflightProbe,
-            imageImportCoordinator.EnqueueApprovedSessionAsync,
+            async (sessionId, token) =>
+            {
+                await imageImportCoordinator.EnqueueApprovedSessionAsync(sessionId, token);
+                await positioningAuxCoordinator.EnqueueApprovedSessionAsync(sessionId, token);
+            },
             _paths);
         await imageImportPreflightCoordinator.RecoverAsync(cancellationToken);
+        await positioningAuxCoordinator.RecoverAsync(cancellationToken);
         await imageImportCoordinator.RecoverAsync(cancellationToken);
         await imageInspectionCoordinator.RecoverAsync(cancellationToken);
         await imageMetadataCoordinator.RecoverAsync(cancellationToken);
@@ -97,7 +111,9 @@ public sealed class ControlApplication
             imageImportPreflightCoordinator,
             imageImportPreflightCatalog,
             imageInspectionCoordinator,
-            imageMetadataCoordinator);
+            imageMetadataCoordinator,
+            positioningAuxCoordinator,
+            positioningAuxCatalog);
         await using var pipeServer = new NamedPipeControlServer(pipeName, dispatcher);
         pipeServer.Start();
 

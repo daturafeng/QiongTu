@@ -131,6 +131,7 @@ $controlPipe = $null
 $controlReader = $null
 $controlWriter = $null
 $probeRun = $null
+$positioningProbeRun = $null
 try {
     $controlRuntime = Join-Path $temporaryRoot 'control-runtime'
     $controlArguments = "--runtime-dir `"$controlRuntime`""
@@ -260,11 +261,65 @@ try {
         throw 'The self-contained image probe returned an invalid public synthetic result.'
     }
 
+    $mrk = [System.Text.Encoding]::UTF8.GetBytes("1`t12345.123456`t[2200]`t1,N`t-2,E`t3,V`t30.12345678,Lat`t120.12345678,Lon`t100.123,Ellh`t0.001000,`t0.001000,`t0.002000`t50,Q`r`n")
+    $mrkSha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $mrkHash = ([BitConverter]::ToString($mrkSha.ComputeHash($mrk))).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        $mrkSha.Dispose()
+    }
+    $mrkObjectKey = "sha256/$($mrkHash.Substring(0, 2))/$mrkHash"
+    $mrkObjectPath = Join-Path $formalRoot ($mrkObjectKey -replace '/', [System.IO.Path]::DirectorySeparatorChar)
+    New-Item -ItemType Directory -Path (Split-Path -Parent $mrkObjectPath) -Force | Out-Null
+    [System.IO.File]::WriteAllBytes($mrkObjectPath, $mrk)
+    $positioningHeader = [ordered]@{
+        schemaVersion = 'qiongtu.image-probe.cas-positioning-aux.v1'
+        profile = 'cas-positioning-aux.v1'
+        objectKind = 'positioning_aux'
+        auxiliaryType = 'mrk'
+        associationItemCount = 1
+        formalObjectRoot = $formalRoot
+        objectKey = $mrkObjectKey
+        expectedSha256 = $mrkHash
+        expectedByteLength = $mrk.Length
+    } | ConvertTo-Json -Compress
+
+    $positioningProbeRun = Start-RedirectedProcess -FileName $probeExecutable -Arguments '--stdio' -RedirectInput
+    $positioningProbeRun.Process.StandardInput.WriteLine($positioningHeader)
+    $positioningProbeRun.Process.StandardInput.Close()
+    if (-not $positioningProbeRun.Process.WaitForExit(20000)) {
+        Stop-ProcessIfRunning -Process $positioningProbeRun.Process
+        throw 'The self-contained positioning auxiliary probe timed out.'
+    }
+
+    $positioningProbeRun.Process.WaitForExit()
+    $positioningOutput = $positioningProbeRun.StandardOutput.GetAwaiter().GetResult()
+    $null = $positioningProbeRun.StandardError.GetAwaiter().GetResult()
+    if ($positioningProbeRun.Process.ExitCode -ne 0) {
+        throw 'The self-contained positioning auxiliary probe returned a failure exit code.'
+    }
+
+    $positioningResult = $positioningOutput | ConvertFrom-Json
+    Write-Verbose $positioningOutput
+    if ($positioningResult.parseState -ne 'parsed' -or
+        $positioningResult.qualityState -ne 'passed' -or
+        $positioningResult.sequenceState -ne 'contiguous' -or
+        $positioningResult.coverageState -ne 'complete' -or
+        $positioningResult.privacy.pathsIncluded -or
+        $positioningResult.privacy.contentHashesIncluded -or
+        $positioningResult.privacy.objectKeysIncluded -or
+        $positioningResult.privacy.rawMetadataIncluded -or
+        $positioningResult.privacy.coordinatesIncluded) {
+        throw 'The self-contained positioning auxiliary probe returned an invalid public synthetic result.'
+    }
+
     [ordered]@{
         schemaVersion = 'qiongtu.package-image-probe-acceptance.v1'
         status = 'passed'
         controlProductBoot = 'passed'
         publicSyntheticProbe = 'passed'
+        publicSyntheticPositioningAuxProbe = 'passed'
         djiThermalSdkIncluded = $false
     } | ConvertTo-Json -Compress
 }
@@ -279,6 +334,10 @@ finally {
     if ($null -ne $probeRun) {
         Stop-ProcessIfRunning -Process $probeRun.Process
         $probeRun.Process.Dispose()
+    }
+    if ($null -ne $positioningProbeRun) {
+        Stop-ProcessIfRunning -Process $positioningProbeRun.Process
+        $positioningProbeRun.Process.Dispose()
     }
     if (Test-Path -LiteralPath $temporaryRoot) {
         Remove-Item -LiteralPath $temporaryRoot -Recurse -Force

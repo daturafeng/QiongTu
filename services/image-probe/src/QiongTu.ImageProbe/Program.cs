@@ -35,6 +35,11 @@ public static class Program
             {
                 responseKind = "image-metadata";
             }
+            else if (string.Equals(dispatch.Profile, ImageProbeProtocol.CasPositioningAuxProfile, StringComparison.Ordinal) ||
+                     string.Equals(dispatch.SchemaVersion, ImageProbeProtocol.CasPositioningAuxV1, StringComparison.Ordinal))
+            {
+                responseKind = "cas-positioning-aux";
+            }
 
             if (string.Equals(dispatch.Profile, ImageProbeProtocol.SourcePreflightProfile, StringComparison.Ordinal) &&
                 string.Equals(dispatch.SchemaVersion, ImageProbeProtocol.SourcePreflightV1, StringComparison.Ordinal))
@@ -103,6 +108,28 @@ public static class Program
                 return result.Status == "failed" ? 1 : 0;
             }
 
+            if (responseKind == "cas-positioning-aux")
+            {
+                var header = JsonSerializer.Deserialize<ImageProbeCasPositioningAuxRequestHeader>(headerBytes, SerializerOptions)
+                    ?? throw new ImageProbeProtocolException("invalid_header");
+                StdioEnvelope.ValidatePositioningAuxHeader(header);
+                if (await StdioEnvelope.HasTrailingDataAsync(input, CancellationToken.None))
+                {
+                    throw new ImageProbeProtocolException("trailing_input");
+                }
+
+                var result = CasPositioningAuxAnalyzer.Analyze(header);
+                if (JsonSerializer.SerializeToUtf8Bytes(result, SerializerOptions).Length >
+                    ImageProbeProtocol.MaximumPositioningAuxOutputBytes)
+                {
+                    await WriteResultAsync(CasPositioningAuxAnalyzer.Failed("probe_output_limit_exceeded"));
+                    return 1;
+                }
+
+                await WriteResultAsync(result);
+                return result.ParseState == "failed" ? 1 : 0;
+            }
+
             throw new ImageProbeProtocolException("unsupported_protocol");
         }
         catch (ImageProbeProtocolException exception)
@@ -146,11 +173,15 @@ public static class Program
     private static Task WriteResultAsync(ImageProbeImageMetadataResult result) =>
         WriteBoundedJsonAsync(result);
 
+    private static Task WriteResultAsync(ImageProbeCasPositioningAuxResult result) =>
+        WriteBoundedJsonAsync(result);
+
     private static Task WriteFailureAsync(string reasonCode, string responseKind) =>
         responseKind switch
         {
             "cas-image" => WriteBoundedJsonAsync(CasImageAnalyzer.Failed(reasonCode)),
             "image-metadata" => WriteBoundedJsonAsync(ImageMetadataAnalyzer.Failed(reasonCode)),
+            "cas-positioning-aux" => WriteBoundedJsonAsync(CasPositioningAuxAnalyzer.Failed(reasonCode)),
             _ => WriteBoundedJsonAsync(SourcePreflightAnalyzer.Failed(reasonCode))
         };
 
@@ -191,6 +222,21 @@ public static class Program
         {
             bytes = JsonSerializer.SerializeToUtf8Bytes(
                 ImageMetadataAnalyzer.Failed("probe_output_limit_exceeded"),
+                SerializerOptions);
+        }
+
+        var output = Console.OpenStandardOutput();
+        await output.WriteAsync(bytes);
+        await output.FlushAsync();
+    }
+
+    private static async Task WriteBoundedJsonAsync(ImageProbeCasPositioningAuxResult result)
+    {
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(result, SerializerOptions);
+        if (bytes.Length > ImageProbeProtocol.MaximumPositioningAuxOutputBytes)
+        {
+            bytes = JsonSerializer.SerializeToUtf8Bytes(
+                CasPositioningAuxAnalyzer.Failed("probe_output_limit_exceeded"),
                 SerializerOptions);
         }
 

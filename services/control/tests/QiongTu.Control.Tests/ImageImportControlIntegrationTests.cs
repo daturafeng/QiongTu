@@ -211,6 +211,7 @@ public sealed class ImageImportControlIntegrationTests
     }
 
     [TestMethod]
+    [DoNotParallelize]
     public async Task StopIfIdleRejectsWhileImageImportIsQueuedOrActive()
     {
         await using var scope = await ImageImportPipeScope.StartAsync();

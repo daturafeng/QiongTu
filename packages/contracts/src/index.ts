@@ -73,6 +73,10 @@ export const CONTROL_METHOD_IMAGE_IMPORT_ENTRY_LIST = "image-import-entry.list" 
 export const CONTROL_METHOD_IMAGE_IMPORT_PREFLIGHT_START = "image-import-preflight.start" as const;
 export const CONTROL_METHOD_IMAGE_IMPORT_PREFLIGHT_GET = "image-import-preflight.get" as const;
 export const CONTROL_METHOD_IMAGE_IMPORT_PREFLIGHT_ITEM_LIST = "image-import-preflight-item.list" as const;
+export const CONTROL_METHOD_POSITIONING_AUX_IMPORT_GET = "positioning-aux-import.get" as const;
+export const CONTROL_METHOD_POSITIONING_AUX_IMPORT_RESUME = "positioning-aux-import.resume" as const;
+export const CONTROL_METHOD_POSITIONING_AUX_IMPORT_CANCEL = "positioning-aux-import.cancel" as const;
+export const CONTROL_METHOD_POSITIONING_AUX_FILE_LIST = "positioning-aux-file.list" as const;
 
 export const PROJECT_DATASET_CONTROL_METHODS = [
   CONTROL_METHOD_PROJECT_CREATE,
@@ -110,6 +114,15 @@ export const IMAGE_IMPORT_CONTROL_METHODS = [
 ] as const;
 
 export type ImageImportControlMethod = typeof IMAGE_IMPORT_CONTROL_METHODS[number];
+
+export const POSITIONING_AUX_CONTROL_METHODS = [
+  CONTROL_METHOD_POSITIONING_AUX_IMPORT_GET,
+  CONTROL_METHOD_POSITIONING_AUX_IMPORT_RESUME,
+  CONTROL_METHOD_POSITIONING_AUX_IMPORT_CANCEL,
+  CONTROL_METHOD_POSITIONING_AUX_FILE_LIST
+] as const;
+
+export type PositioningAuxControlMethod = typeof POSITIONING_AUX_CONTROL_METHODS[number];
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | readonly JsonValue[];
@@ -594,6 +607,109 @@ export interface ImageImportPreflightItem {
   readonly privacy: ImageImportPreflightPrivacy;
 }
 
+export interface PositioningAuxImportGetParameters {
+  readonly runId: string;
+}
+
+export interface PositioningAuxImportResumeParameters {
+  readonly runId: string;
+  readonly sourceRootPath: string;
+}
+
+export interface PositioningAuxImportCancelParameters {
+  readonly runId: string;
+}
+
+export interface PositioningAuxFileListParameters extends PageRequest {
+  readonly datasetVersionId?: string;
+  readonly runId?: string;
+}
+
+export interface PositioningAuxPrivacy {
+  readonly pathsIncluded: false;
+  readonly locatorsIncluded: false;
+  readonly sourceKeysIncluded: false;
+  readonly hashesIncluded: false;
+  readonly objectKeysIncluded: false;
+  readonly stageReceiptsIncluded: false;
+  readonly rawRecordsIncluded: false;
+  readonly coordinatesIncluded: false;
+  readonly timestampsIncluded: false;
+  readonly ownerSampleStatisticsIncluded: false;
+}
+
+export type PositioningAuxImportStatus =
+  | "pending"
+  | "staging"
+  | "staged"
+  | "publishing"
+  | "retained"
+  | "parsing"
+  | "completed"
+  | "blocked"
+  | "interrupted"
+  | "cancelled";
+
+export type PositioningAuxType = "mrk" | "nav" | "obs" | "rtk";
+
+export type PositioningAuxRetentionState =
+  | "pending"
+  | "staging"
+  | "staged"
+  | "publishing"
+  | "retained"
+  | "blocked"
+  | "interrupted";
+
+export type PositioningAuxParseState = "not_attempted" | "parsing" | "parsed" | "unsupported" | "failed";
+
+export type PositioningAuxQualityState = "not_checked" | "passed" | "warning" | "failed";
+
+export type PositioningAuxUsageState = "not_recorded" | "used" | "rejected";
+
+export interface PositioningAuxImportRun {
+  readonly runId: string;
+  readonly importSessionId: string;
+  readonly datasetVersionId: string;
+  readonly status: PositioningAuxImportStatus;
+  readonly totalFileCount: number;
+  readonly completedFileCount: number;
+  readonly failedFileCount: number;
+  readonly associationProfile: string;
+  readonly associationPolicyVersion: string;
+  readonly parserProfile: string;
+  readonly parserName: string;
+  readonly parserVersion: string;
+  readonly lastErrorCode?: string;
+  readonly createdAtUtc: string;
+  readonly startedAtUtc?: string;
+  readonly updatedAtUtc: string;
+  readonly completedAtUtc?: string;
+  readonly cancelledAtUtc?: string;
+  readonly privacy: PositioningAuxPrivacy;
+}
+
+export interface PositioningAuxFile {
+  readonly positioningAuxFileId: string;
+  readonly runId: string;
+  readonly datasetVersionId: string;
+  readonly auxType: PositioningAuxType;
+  readonly retentionState: PositioningAuxRetentionState;
+  readonly parseState: PositioningAuxParseState;
+  readonly qualityState: PositioningAuxQualityState;
+  readonly parserProfile: string;
+  readonly parserName: string;
+  readonly parserVersion: string;
+  readonly usageState: PositioningAuxUsageState;
+  readonly reasonCode?: string;
+  readonly createdAtUtc: string;
+  readonly updatedAtUtc: string;
+  readonly retainedAtUtc?: string;
+  readonly parsedAtUtc?: string;
+  readonly qualityCheckedAtUtc?: string;
+  readonly privacy: PositioningAuxPrivacy;
+}
+
 export type LaunchReadinessStage =
   | "main.started"
   | "app.ready"
@@ -844,6 +960,63 @@ function hasImageImportPreflightPrivateProperty(value: unknown, seen = new Set<u
   return false;
 }
 
+function hasPositioningAuxPrivateProperty(value: unknown, seen = new Set<unknown>()): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  if (seen.has(value)) {
+    return false;
+  }
+
+  seen.add(value);
+  for (const [key, item] of Object.entries(value)) {
+    const normalizedKey = key.toLowerCase();
+    if (normalizedKey.includes("path")
+      || normalizedKey.includes("locator")
+      || normalizedKey.includes("rootkey")
+      || normalizedKey.includes("sourcekey")
+      || normalizedKey.includes("sourceentrykey")
+      || normalizedKey.includes("sourceidentitykey")
+      || normalizedKey.includes("hash")
+      || normalizedKey.includes("objectkey")
+      || normalizedKey.includes("fileobject")
+      || normalizedKey.includes("stage")
+      || normalizedKey.includes("rawrecord")
+      || normalizedKey.includes("rawmetadata")
+      || normalizedKey.includes("recordline")
+      || normalizedKey.includes("coordinate")
+      || normalizedKey === "gps"
+      || normalizedKey.includes("latitude")
+      || normalizedKey.includes("longitude")
+      || normalizedKey.includes("altitude")
+      || normalizedKey.includes("timestamp")
+      || normalizedKey.includes("capturetime")
+      || normalizedKey.includes("gpstime")
+      || normalizedKey.includes("owner")
+      || normalizedKey.includes("samplestatistics")
+      || normalizedKey.includes("database")
+      || normalizedKey.includes("sqlite")
+      || normalizedKey.includes("commandline")
+      || normalizedKey.includes("environment")
+      || normalizedKey.includes("token")
+      || normalizedKey === "user"
+      || normalizedKey === "machine") {
+      return true;
+    }
+
+    if (isRecord(item) && hasPositioningAuxPrivateProperty(item, seen)) {
+      return true;
+    }
+
+    if (Array.isArray(item) && item.some(arrayItem => hasPositioningAuxPrivateProperty(arrayItem, seen))) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function isRelativeObjectKey(value: unknown): value is string {
   if (!isNonEmptyString(value)) {
     return false;
@@ -910,6 +1083,63 @@ function isImageImportPreflightPrivacy(value: unknown): value is ImageImportPref
     && value.serialNumbersIncluded === false
     && value.coordinatesIncluded === false
     && value.ownerSampleStatisticsIncluded === false;
+}
+
+function isPositioningAuxPrivacy(value: unknown): value is PositioningAuxPrivacy {
+  return isRecord(value)
+    && value.pathsIncluded === false
+    && value.locatorsIncluded === false
+    && value.sourceKeysIncluded === false
+    && value.hashesIncluded === false
+    && value.objectKeysIncluded === false
+    && value.stageReceiptsIncluded === false
+    && value.rawRecordsIncluded === false
+    && value.coordinatesIncluded === false
+    && value.timestampsIncluded === false
+    && value.ownerSampleStatisticsIncluded === false;
+}
+
+function isPositioningAuxImportStatus(value: unknown): value is PositioningAuxImportStatus {
+  return value === "pending"
+    || value === "staging"
+    || value === "staged"
+    || value === "publishing"
+    || value === "retained"
+    || value === "parsing"
+    || value === "completed"
+    || value === "blocked"
+    || value === "interrupted"
+    || value === "cancelled";
+}
+
+function isPositioningAuxType(value: unknown): value is PositioningAuxType {
+  return value === "mrk" || value === "nav" || value === "obs" || value === "rtk";
+}
+
+function isPositioningAuxRetentionState(value: unknown): value is PositioningAuxRetentionState {
+  return value === "pending"
+    || value === "staging"
+    || value === "staged"
+    || value === "publishing"
+    || value === "retained"
+    || value === "blocked"
+    || value === "interrupted";
+}
+
+function isPositioningAuxParseState(value: unknown): value is PositioningAuxParseState {
+  return value === "not_attempted"
+    || value === "parsing"
+    || value === "parsed"
+    || value === "unsupported"
+    || value === "failed";
+}
+
+function isPositioningAuxQualityState(value: unknown): value is PositioningAuxQualityState {
+  return value === "not_checked" || value === "passed" || value === "warning" || value === "failed";
+}
+
+function isPositioningAuxUsageState(value: unknown): value is PositioningAuxUsageState {
+  return value === "not_recorded" || value === "used" || value === "rejected";
 }
 
 function isOptionalResourceValues(value: unknown): value is Readonly<Record<string, number>> | undefined {
@@ -1488,6 +1718,99 @@ export function isImageImportPreflightItem(value: unknown): value is ImageImport
     && isIsoDateTime(value.updatedAtUtc)
     && (value.completedAtUtc === undefined || isIsoDateTime(value.completedAtUtc))
     && isImageImportPreflightPrivacy(value.privacy);
+}
+
+export function isPositioningAuxImportGetParameters(
+  value: unknown
+): value is PositioningAuxImportGetParameters {
+  return isRecord(value)
+    && isBoundedString(value.runId, 128)
+    && Object.keys(value).every(key => key === "runId");
+}
+
+export function isPositioningAuxImportResumeParameters(
+  value: unknown
+): value is PositioningAuxImportResumeParameters {
+  return isRecord(value)
+    && isBoundedString(value.runId, 128)
+    && isBoundedString(value.sourceRootPath, 32_767)
+    && !hasAsciiControlCharacter(value.sourceRootPath)
+    && (/^[A-Za-z]:[\\/]/u.test(value.sourceRootPath) || /^\\\\[^\\]/u.test(value.sourceRootPath))
+    && Object.keys(value).every(key => key === "runId" || key === "sourceRootPath");
+}
+
+export function isPositioningAuxImportCancelParameters(
+  value: unknown
+): value is PositioningAuxImportCancelParameters {
+  return isRecord(value)
+    && isBoundedString(value.runId, 128)
+    && Object.keys(value).every(key => key === "runId");
+}
+
+export function isPositioningAuxFileListParameters(
+  value: unknown
+): value is PositioningAuxFileListParameters {
+  return isRecord(value)
+    && !hasPositioningAuxPrivateProperty(value)
+    && (value.datasetVersionId === undefined || isBoundedString(value.datasetVersionId, 128))
+    && (value.runId === undefined || isBoundedString(value.runId, 128))
+    && (value.datasetVersionId !== undefined || value.runId !== undefined)
+    && isOptionalPageSize(value.pageSize)
+    && (value.cursor === undefined || isBoundedString(value.cursor, 512));
+}
+
+export function isPositioningAuxImportRun(value: unknown): value is PositioningAuxImportRun {
+  return isRecord(value)
+    && !hasSensitiveContractProperty(value)
+    && !hasPositioningAuxPrivateProperty({ ...value, privacy: undefined })
+    && isBoundedString(value.runId, 128)
+    && isBoundedString(value.importSessionId, 128)
+    && isBoundedString(value.datasetVersionId, 128)
+    && isPositioningAuxImportStatus(value.status)
+    && isNonNegativeInteger(value.totalFileCount)
+    && isNonNegativeInteger(value.completedFileCount)
+    && isNonNegativeInteger(value.failedFileCount)
+    && value.completedFileCount + value.failedFileCount <= value.totalFileCount
+    && isBoundedString(value.associationProfile, 128)
+    && isBoundedString(value.associationPolicyVersion, 128)
+    && isBoundedString(value.parserProfile, 128)
+    && isBoundedString(value.parserName, 128)
+    && isBoundedString(value.parserVersion, 128)
+    && isOptionalBoundedString(value.lastErrorCode, 128)
+    && isIsoDateTime(value.createdAtUtc)
+    && (value.startedAtUtc === undefined || isIsoDateTime(value.startedAtUtc))
+    && isIsoDateTime(value.updatedAtUtc)
+    && (value.completedAtUtc === undefined || isIsoDateTime(value.completedAtUtc))
+    && (value.cancelledAtUtc === undefined || isIsoDateTime(value.cancelledAtUtc))
+    && isPositioningAuxPrivacy(value.privacy);
+}
+
+export function isPositioningAuxFile(value: unknown): value is PositioningAuxFile {
+  return isRecord(value)
+    && !hasSensitiveContractProperty(value)
+    && !hasPositioningAuxPrivateProperty({ ...value, privacy: undefined })
+    && isBoundedString(value.positioningAuxFileId, 128)
+    && isBoundedString(value.runId, 128)
+    && isBoundedString(value.datasetVersionId, 128)
+    && isPositioningAuxType(value.auxType)
+    && isPositioningAuxRetentionState(value.retentionState)
+    && isPositioningAuxParseState(value.parseState)
+    && isPositioningAuxQualityState(value.qualityState)
+    && isBoundedString(value.parserProfile, 128)
+    && isBoundedString(value.parserName, 128)
+    && isBoundedString(value.parserVersion, 128)
+    && isPositioningAuxUsageState(value.usageState)
+    && isOptionalBoundedString(value.reasonCode, 128)
+    && isIsoDateTime(value.createdAtUtc)
+    && isIsoDateTime(value.updatedAtUtc)
+    && (value.retainedAtUtc === undefined || isIsoDateTime(value.retainedAtUtc))
+    && (value.parsedAtUtc === undefined || isIsoDateTime(value.parsedAtUtc))
+    && (value.qualityCheckedAtUtc === undefined || isIsoDateTime(value.qualityCheckedAtUtc))
+    && isPositioningAuxPrivacy(value.privacy)
+    && (value.usageState !== "used"
+      || (value.retentionState === "retained"
+        && value.parseState === "parsed"
+        && (value.qualityState === "passed" || value.qualityState === "warning")));
 }
 
 export function isControlConnectionStatus(value: unknown): value is ControlConnectionStatus {

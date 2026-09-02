@@ -27,6 +27,8 @@ public sealed class ControlRequestDispatcher
     private readonly ImageImportPreflightCatalog? _imageImportPreflightCatalog;
     private readonly ImageInspectionCoordinator? _imageInspections;
     private readonly ImageMetadataCoordinator? _imageMetadata;
+    private readonly PositioningAuxCoordinator? _positioningAux;
+    private readonly PositioningAuxCatalog? _positioningAuxCatalog;
 
     internal ControlRequestDispatcher(
         string pipeName,
@@ -42,7 +44,9 @@ public sealed class ControlRequestDispatcher
         ImageImportPreflightCoordinator? imageImportPreflights = null,
         ImageImportPreflightCatalog? imageImportPreflightCatalog = null,
         ImageInspectionCoordinator? imageInspections = null,
-        ImageMetadataCoordinator? imageMetadata = null)
+        ImageMetadataCoordinator? imageMetadata = null,
+        PositioningAuxCoordinator? positioningAux = null,
+        PositioningAuxCatalog? positioningAuxCatalog = null)
     {
         _pipeName = pipeName;
         _startedAtUtc = startedAtUtc;
@@ -58,6 +62,8 @@ public sealed class ControlRequestDispatcher
         _imageImportPreflightCatalog = imageImportPreflightCatalog;
         _imageInspections = imageInspections;
         _imageMetadata = imageMetadata;
+        _positioningAux = positioningAux;
+        _positioningAuxCatalog = positioningAuxCatalog;
     }
 
     public async Task<ControlResponse> DispatchAsync(ControlRequest request, CancellationToken cancellationToken)
@@ -125,6 +131,16 @@ public sealed class ControlRequestDispatcher
                     ReadParameters<ImageImportPreflightGetParameters>(request)),
                 ControlMethods.ImageImportPreflightItemList => RequireImageImportPreflightCatalog().ListItems(
                     ReadParameters<ImageImportPreflightItemListParameters>(request)),
+                ControlMethods.PositioningAuxImportGet => RequirePositioningAuxCatalog().Get(
+                    ReadParameters<PositioningAuxImportGetParameters>(request)),
+                ControlMethods.PositioningAuxImportResume => await ResumePositioningAuxAsync(
+                    request,
+                    cancellationToken),
+                ControlMethods.PositioningAuxImportCancel => RequirePositioningAuxCoordinator().Cancel(
+                    request.RequestId,
+                    ReadParameters<PositioningAuxImportCancelParameters>(request)),
+                ControlMethods.PositioningAuxFileList => RequirePositioningAuxCatalog().ListFiles(
+                    ReadParameters<PositioningAuxFileListParameters>(request)),
                 _ => throw new ControlProtocolException("method_not_found", "The requested control method is not available.")
             };
             return new ControlResponse(
@@ -151,6 +167,10 @@ public sealed class ControlRequestDispatcher
             return Failure(request, exception.Code, exception.Message);
         }
         catch (ImageSourcePreflightProbeException exception)
+        {
+            return Failure(request, exception.Code, exception.Message);
+        }
+        catch (ImageCasProbeException exception)
         {
             return Failure(request, exception.Code, exception.Message);
         }
@@ -291,6 +311,24 @@ public sealed class ControlRequestDispatcher
             "image_import_preflight_unavailable",
             "Image import source preflight is not configured for this control process.");
 
+    private async Task<PositioningAuxImportRun> ResumePositioningAuxAsync(
+        ControlRequest request,
+        CancellationToken cancellationToken) =>
+        await RequirePositioningAuxCoordinator().ResumeAsync(
+            request.RequestId,
+            ReadParameters<PositioningAuxImportResumeParameters>(request),
+            cancellationToken);
+
+    private PositioningAuxCoordinator RequirePositioningAuxCoordinator() =>
+        _positioningAux ?? throw new ControlProtocolException(
+            "positioning_aux_unavailable",
+            "Positioning auxiliary import is not configured for this control process.");
+
+    private PositioningAuxCatalog RequirePositioningAuxCatalog() =>
+        _positioningAuxCatalog ?? throw new ControlProtocolException(
+            "positioning_aux_unavailable",
+            "Positioning auxiliary import is not configured for this control process.");
+
     private static string CreateImportSessionId(string requestId)
     {
         var digest = SHA256.HashData(Encoding.UTF8.GetBytes(requestId));
@@ -303,7 +341,8 @@ public sealed class ControlRequestDispatcher
             (_imageImports is not null && !_imageImports.IsIdle) ||
             (_imageImportPreflights is not null && !_imageImportPreflights.IsIdle) ||
             (_imageInspections is not null && !_imageInspections.IsIdle) ||
-            (_imageMetadata is not null && !_imageMetadata.IsIdle))
+            (_imageMetadata is not null && !_imageMetadata.IsIdle) ||
+            (_positioningAux is not null && !_positioningAux.IsIdle))
         {
             throw new ControlProtocolException("control_busy", "The control process still owns active workers.");
         }

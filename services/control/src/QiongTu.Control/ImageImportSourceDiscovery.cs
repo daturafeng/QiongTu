@@ -116,7 +116,28 @@ public sealed class ImageImportSourceDiscovery
     public async Task<ImageImportSourceDiscoveryResult> DiscoverPreflightSidecarsAsync(
         ImageImportSourceRecoveryManifest existingManifest,
         ControlDataPaths controlDataPaths,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        await DiscoverPreflightSidecarsCoreAsync(
+            existingManifest,
+            controlDataPaths,
+            persistRecoveryManifest: true,
+            cancellationToken);
+
+    internal async Task<ImageImportSourceDiscoveryResult> DiscoverPreflightSidecarsPreparedAsync(
+        ImageImportSourceRecoveryManifest existingManifest,
+        ControlDataPaths controlDataPaths,
+        CancellationToken cancellationToken = default) =>
+        await DiscoverPreflightSidecarsCoreAsync(
+            existingManifest,
+            controlDataPaths,
+            persistRecoveryManifest: false,
+            cancellationToken);
+
+    private async Task<ImageImportSourceDiscoveryResult> DiscoverPreflightSidecarsCoreAsync(
+        ImageImportSourceRecoveryManifest existingManifest,
+        ControlDataPaths controlDataPaths,
+        bool persistRecoveryManifest,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(existingManifest);
         ArgumentNullException.ThrowIfNull(controlDataPaths);
@@ -170,7 +191,11 @@ public sealed class ImageImportSourceDiscovery
             RelativePathBySourceItemKey = relativePaths,
             SnapshotBySourceItemKey = snapshots
         };
-        await _security.SaveRecoveryManifestAsync(mergedManifest, cancellationToken);
+        if (persistRecoveryManifest)
+        {
+            await _security.SaveRecoveryManifestAsync(mergedManifest, cancellationToken);
+        }
+
         return discovered with { RecoveryManifest = mergedManifest };
     }
 

@@ -20,6 +20,21 @@ internal static class FormalCasObject
         }
     }
 
+    public static FileStream OpenAndVerify(ImageProbeCasPositioningAuxRequestHeader header)
+    {
+        var stream = Open(header.FormalObjectRoot, header.ObjectKey);
+        try
+        {
+            Verify(stream, header.ExpectedSha256, header.ExpectedByteLength);
+            return stream;
+        }
+        catch
+        {
+            stream.Dispose();
+            throw;
+        }
+    }
+
     private static FileStream Open(string formalObjectRoot, string objectKey)
     {
         var formalRoot = Path.GetFullPath(formalObjectRoot)
